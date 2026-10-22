@@ -1,0 +1,376 @@
+import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+import type { On, SessionAppendInput, ToolCallInput } from 'claude-code'
+
+import { idFor } from '../hooks/detect'
+
+// Key-shaped values are assembled at run time so no file holds one.
+const GH = 'gh' + 'p_' + 'A1b2'.repeat(9)
+const PLACEHOLDER = /<<secret:([a-z0-9-]+):([0-9a-f]{12})>>/
+const HIDDEN = '[secret-guard: 내용을 검사하지 못해 숨김]'
+
+let rows = 0
+
+const toolResult = (text: string): SessionAppendInput => ({
+  message: {
+    type: 'user',
+    role: 'user',
+    content: [{ type: 'tool_result', tool_use_id: `tu${rows}`, content: text }],
+  },
+  door: 'tool-result',
+  origin: { kind: 'tool', tool: 'Read' },
+  uuid: `row-${++rows}`,
+})
+
+const textOf = (row: SessionAppendInput | undefined) =>
+  (row?.message.content ?? [])
+    .map(b => (b.type === 'tool_result' ? String(b.content) : b.type === 'text' ? String(b.text) : ''))
+    .join('\n')
+    .replace(/\n\n\[secret-guard\] .*$/, '')
+
+async function setup($: Engine, on: On) {
+  const session = mock.session(on)
+  mock.store(on)
+  const calls: ToolCallInput[] = []
+  on('tool.call', (_, e) => {
+    calls.push(e)
+    return { result: {} }
+  })
+  const drawn: Record<string, Record<string, unknown>> = {}
+  on('ui.render', (_, e) => {
+    drawn[e.component] = e.props as Record<string, unknown>
+    return { type: 'engine', ref: 'bottom' } as never
+  })
+  const store = async (text: string) => {
+    await $.session.append(toolResult(text))
+    return textOf(session.appended().at(-1))
+  }
+  const draw = async (component: string, props: Record<string, unknown>) => {
+    await $.ui.render({ surface: 'desktop', component, requestId: 'r1', props } as never)
+    return drawn[component] ?? {}
+  }
+  return { store, calls, draw }
+}
+
+test('a token in a tool result is stored as a placeholder, never raw', async ($, on) => {
+  const { store } = await setup($, on)
+  const stored = await store(`GITHUB_TOKEN=${GH}\nOTHER=1`)
+  expect(stored).not.toContain(GH)
+  expect(stored).toMatch(/^GITHUB_TOKEN=<<secret:github-token:[0-9a-f]{12}>>\nOTHER=1$/)
+})
+
+test('a row with a redaction tells the model how to use the placeholder, a clean row does not', async ($, on) => {
+  const session = mock.session(on)
+  mock.store(on)
+  await $.session.append(toolResult(`GITHUB_TOKEN=${GH}`))
+  await $.session.append(toolResult('nothing secret here'))
+  const [redacted, clean] = session.appended().slice(-2).map(row => row.message.content)
+  expect(redacted).toHaveLength(1)
+  expect(String(redacted?.[0]?.type === 'tool_result' && redacted[0].content)).toContain('\n\n[secret-guard] ')
+  expect(JSON.stringify(clean)).not.toContain('[secret-guard] ')
+})
+
+test('the same value always gets the same placeholder', async ($, on) => {
+  const { store } = await setup($, on)
+  const first = (await store(`token: ${GH}`)).match(PLACEHOLDER)?.[0]
+  const second = (await store(`echo ${GH} done`)).match(PLACEHOLDER)?.[0]
+  expect(first).toBeDefined()
+  expect(second).toBe(first)
+})
+
+test('an Edit carries the real value to the tool in both strings', async ($, on) => {
+  const { store, calls } = await setup($, on)
+  const token = (await store(`X=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/config.ts', old_string: `key: '${token}'`, new_string: `key: process.env.GH // ${token}` })
+  const edit = calls.at(-1)
+  expect(edit?.tool).toBe('Edit')
+  expect(edit && 'old_string' in edit ? edit.old_string : '').toBe(`key: '${GH}'`)
+  expect(edit && 'new_string' in edit ? edit.new_string : '').toBe(`key: process.env.GH // ${GH}`)
+})
+
+test('Bash runs with the real value and its echo, plain or base64, is stored scrubbed', async ($, on) => {
+  const { store, calls } = await setup($, on)
+  const token = (await store(`export GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  await $.tool.call({ tool: 'Bash', command: `gh secret set GH_TOKEN --body ${token}` })
+  const bash = calls.at(-1)
+  expect(bash && 'command' in bash ? bash.command : '').toBe(`gh secret set GH_TOKEN --body ${GH}`)
+
+  const echoed = await store(`${GH}\n${btoa(GH)}`)
+  expect(echoed).not.toContain(GH)
+  expect(echoed).not.toContain(btoa(GH).replace(/=+$/, ''))
+  expect(echoed.split('\n')[0]).toBe(token)
+  expect(echoed.split('\n')[1]).toMatch(/^<<secret:github-token-b64:[0-9a-f]{12}>>/)
+})
+
+test('Read output glyphs for line ends and spaces stay out of the value', async ($, on) => {
+  const { store, calls } = await setup($, on)
+  const stored = await store(
+    `GITHUB_TOKEN=${GH}␊\nDB_URL=postgres://app:` + 'Pw4sd9fk2x' + '@db.local/app␊\nAPI_KEY·=·' + 'Zq81Lm0pRt' + '␊',
+  )
+  expect(stored).toMatch(/^GITHUB_TOKEN=<<secret:github-token:[0-9a-f]{12}>>␊\n/)
+  expect(stored).toContain('@db.local/app␊')
+  const placeholders = stored.match(new RegExp(PLACEHOLDER.source, 'g')) ?? []
+  expect(placeholders).toHaveLength(3)
+  await $.tool.call({ tool: 'Write', file_path: '/repo/out.env', content: placeholders.join('|') })
+  const write = calls.at(-1)
+  expect(write && 'content' in write ? write.content : '').toBe([GH, 'Pw4sd9fk2x', 'Zq81Lm0pRt'].join('|'))
+})
+
+test('a placeholder this session does not know is denied before the tool runs', async ($, on) => {
+  const { calls } = await setup($, on)
+  const r = await $.tool.call({ tool: 'Bash', command: 'echo <<secret:user:0123456789ab>>' })
+  expect(calls).toHaveLength(0)
+  expect(r.deny ?? r.text ?? '').toContain('<<secret:user:0123456789ab>>')
+})
+
+test('hashes, uuids, plain words and variable references pass untouched', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = [
+    'commit 9fceb02d0ae598e95dc970b74767f19372d61af8',
+    'sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'id: 123e4567-e89b-12d3-a456-426614174000',
+    'password: required',
+    'token_type: bearer',
+    'API_KEY=${API_KEY}',
+    'secret = process.env.SECRET_VALUE',
+    'const token = getAccessToken(user)',
+    'token: ${{ secrets.GH_TOKEN }}',
+    'API_KEY=your_api_key_here',
+    '"cache_read_input_tokens": 1234567890,',
+    'secret_version: 2024-10-22',
+    'NEXTAUTH_URL=http://localhost:3000',
+    'token_endpoint: https://auth0.example.com/oauth/token',
+    'private_key_path: /etc/ssl/private/server1.key',
+    'secretName: db-credentials-v2',
+    'AUTH_SECRET_FILE=./secrets/auth2.txt',
+  ].join('\n')
+  expect(await store(text)).toBe(text)
+})
+
+test('a private key block is redacted whole', async ($, on) => {
+  const { store } = await setup($, on)
+  const pem = '-----BEGIN ' + 'RSA PRIVATE KEY-----\n' + 'MIIEow' + 'IBAAKCAQEA7q'.repeat(6) + '\n-----END ' + 'RSA PRIVATE KEY-----'
+  const stored = await store(`before\n${pem}\nafter`)
+  expect(stored).toMatch(/^before\n<<secret:private-key:[0-9a-f]{12}>>\nafter$/)
+})
+
+test('a URL keeps its user and host, only the password is redacted', async ($, on) => {
+  const { store } = await setup($, on)
+  const stored = await store('DATABASE_URL=postgres://u:' + 'pa55w0rdX' + '@h/db')
+  expect(stored).toMatch(/^DATABASE_URL=postgres:\/\/u:<<secret:url-password:[0-9a-f]{12}>>@h\/db$/)
+})
+
+test('/secret registers a value, fills the prompt, and scrubs it from later rows', async ($, on) => {
+  const { store } = await setup($, on)
+  const filled: string[] = []
+  on('command.register', () => ({ value: { command: 'secret' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('prompt.fill', (_, e) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const value = 'correct' + 'horse' + 'battery'
+  const r = await $.command.run({
+    command: 'secret',
+    args: ` ${value} `,
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  const token = r.text?.match(PLACEHOLDER)?.[0]
+  expect(token).toMatch(/^<<secret:user:[0-9a-f]{12}>>$/)
+  expect(r.text).toBe(`${token} 로 등록됨`)
+  expect(filled).toEqual([`${token} `])
+
+  expect(await store(`the wifi password is ${value}.`)).toBe(`the wifi password is ${token}.`)
+})
+
+test('the system prompt gains the policy section', async ($, on) => {
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'hello', scope: 'shared' }] }))
+  const r = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] })
+  expect(r.sections.map(s => s.id)).toEqual(['intro', 'secret-guard:policy'])
+  expect(r.sections.at(-1)?.text).toContain('<<secret:LABEL:ID>>')
+})
+
+test('mentioned files and CLAUDE.md reach the model scrubbed', async ($, on) => {
+  mock.store(on)
+  on('prompt.attachment', (_, e) => ({ text: e.text }))
+  on('prompt.context', (_, e) => ({ blocks: e.blocks }))
+  const attached = await $.prompt.attachment({ type: 'file', text: `SLACK=${GH}`, origin: { kind: 'engine' } } as Parameters<Engine['prompt']['attachment']>[0])
+  expect(attached.text).toMatch(/^SLACK=<<secret:github-token:[0-9a-f]{12}>>$/)
+  const context = await $.prompt.context({ blocks: [{ name: 'claudeMd', text: `deploy token ${GH}` }] })
+  expect(context.blocks[0]?.text).toBe(`deploy token ${attached.text?.slice(6)}`)
+})
+
+test('placeholder ids are HMAC-SHA256 (RFC 4231 case 2), cut to 12 hex', async () => {
+  expect(await idFor('Jefe', 'what do ya want for nothing?')).toBe('5bdcc146bf60')
+})
+
+test('a row the guard cannot inspect is stored hidden, not raw', async ($, on) => {
+  const session = mock.session(on)
+  mock.store(on)
+  on('state.get', () => ({ deny: 'unavailable' }))
+  await $.session.append(toolResult(`GITHUB_TOKEN=${GH}`))
+  const stored = textOf(session.appended().at(-1))
+  expect(stored).toBe(HIDDEN)
+})
+
+test('a reply draws its secret paragraphs itself, the value behind a hover, the rest as markdown', async ($, on) => {
+  const { store, draw } = await setup($, on)
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const text = `# 결과\n\n- 토큰은 ${ph} 입니다\n\n\`\`\`yaml\ntoken: ${ph}\n\`\`\`\n\n끝.`
+  const tree = JSON.stringify(await $.ui.render({ surface: 'desktop', component: 'AssistantMessage', requestId: 'm1', props: { text, isFirstOfReply: true } } as never))
+  expect(tree).not.toContain('<<secret:')
+  expect(tree).toContain(GH)
+  expect(tree).toContain('eye-off')
+  expect(tree).toContain('.secret .v,.eye{opacity:0}')
+  expect(tree).not.toContain('filter')
+  expect(tree).toContain('• 토큰은 ')
+  expect(tree).toContain('# 결과')
+  expect(tree).toContain('끝.')
+
+  const terminal = JSON.stringify(await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'm2', props: { text, isFirstOfReply: true } } as never))
+  expect(terminal).toContain('🙈')
+  expect(terminal).toContain(GH)
+  expect(terminal).not.toContain('<svg')
+
+  const plain = await draw('AssistantMessage', { text: '비밀 없음', isFirstOfReply: true })
+  expect(plain.text).toBe('비밀 없음')
+})
+
+test('a user row draws a pasted value and a placeholder as the hover chip, and never the note', async ($, on) => {
+  const { store, draw } = await setup($, on)
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const note = '[secret-guard] Values shaped <<secret:LABEL:ID>> above are redacted credentials. Copy them verbatim into tool inputs; the real value is substituted when the tool runs. Never ask the user for the value or try to recover it.'
+  const user = (text: string) => ({ surface: 'desktop', component: 'UserMessage', requestId: 'u1', props: { text, origin: { kind: 'unclassified' }, isExpanded: false } }) as never
+  for (const text of [`token ${ph}\n\n${note}`, `token ${GH}`]) {
+    const tree = JSON.stringify(await $.ui.render(user(text)))
+    expect(tree).toContain('eye-off')
+    expect(tree).toContain(GH)
+    expect(tree).not.toContain('[secret-guard] ')
+  }
+  const plain = await draw('UserMessage', { text: `hello\n\n${note}`, origin: { kind: 'unclassified' }, isExpanded: false })
+  expect(plain.text).toBe('hello')
+})
+
+test('only file and process tools get the real value; network and MCP tools are refused, handoff tools keep the placeholder', async ($, on) => {
+  const { store, calls } = await setup($, on)
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const fetched = await $.tool.call({ tool: 'WebFetch', url: `https://example.com/?k=${ph}`, prompt: 'read' } as never)
+  expect(fetched.deny ?? fetched.text ?? '').toContain('secret-guard')
+  const mcp = await $.tool.call({ tool: 'mcp__slack__post', text: ph } as never)
+  expect(mcp.deny ?? mcp.text ?? '').toContain('secret-guard')
+  expect(calls).toHaveLength(0)
+  await $.tool.call({ tool: 'Agent', prompt: `use ${ph}`, description: 'x', subagent_type: 'general-purpose' } as never)
+  expect(JSON.stringify(calls.at(-1))).toContain(ph)
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com', prompt: 'read' } as never)
+  expect(calls).toHaveLength(2)
+})
+
+test('hex and uuid secrets, and passwords with shell or quote characters, are redacted whole', async ($, on) => {
+  const { store } = await setup($, on)
+  const hex = 'ab12'.repeat(16)
+  const uuid = '123e4567-e89b-12d3-a456-426614174000'
+  const cases = [
+    [`JWT_SECRET=${hex}`, hex],
+    [`client_secret: ${uuid}`, uuid],
+    ['DB_PASSWORD=P@ss$w0rd123', 'P@ss$w0rd123'],
+    ['"password": "Ab1(cdefgh)"', 'Ab1(cdefgh)'],
+    ['API_KEY=aB3xyz789;tail', 'aB3xyz789'],
+    ['API_KEY=Abcdefgh12......', 'Abcdefgh12......'],
+  ] as const
+  for (const [line, value] of cases) {
+    const stored = await store(line)
+    expect(stored).not.toContain(value)
+    expect(stored).toMatch(PLACEHOLDER)
+  }
+  const sha = 'cd34'.repeat(10)
+  expect(await store(`commit_sha: ${sha}`)).toBe(`commit_sha: ${sha}`)
+  expect(await store('API_KEY=sk-xxxxxxxxxxxxxxxx')).toBe('API_KEY=sk-xxxxxxxxxxxxxxxx')
+})
+
+test('two first rows at once share one salt, so one value keeps one placeholder', async ($, on) => {
+  const session = mock.session(on)
+  mock.store(on)
+  await Promise.all([$.session.append(toolResult(`A=${GH}`)), $.session.append(toolResult(`B=${GH}`))])
+  const ids = session.appended().map(row => textOf(row).match(PLACEHOLDER)?.[2])
+  expect(ids[0]).toBeDefined()
+  expect(ids[1]).toBe(ids[0])
+})
+
+test('a short URL password is hidden in the URL but never marks unrelated text on screen', async ($, on) => {
+  const { store, draw } = await setup($, on)
+  expect(await store('postgres://u:pw@h/db')).toMatch(/^postgres:\/\/u:<<secret:url-password:[0-9a-f]{12}>>@h\/db$/)
+  const result = await draw('ToolResult', { tool_use_id: 't1', tool: 'Bash', output: { stdout: 'pwd is /home', stderr: '' }, isErrored: false })
+  expect((result.output as { stdout: string }).stdout).toBe('pwd is /home')
+})
+
+test('tool rows show the real value with the mark, in the input and in the raw output', async ($, on) => {
+  const { store, draw } = await setup($, on)
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const use = await draw('ToolUse', {
+    tool_use_id: 't1', tool: 'Write', input: { file_path: '/a.yaml', content: `token: ${ph}` },
+    isRunning: true, isErrored: false, isInterrupted: false,
+  })
+  expect((use.input as { content: string }).content).toBe(`token: 🙈${GH}`)
+  expect('output' in use).toBe(false)
+  const result = await draw('ToolResult', { tool_use_id: 't1', tool: 'Bash', output: { stdout: `GITHUB_TOKEN=${GH}`, stderr: '' }, isErrored: false })
+  expect((result.output as { stdout: string }).stdout).toBe(`GITHUB_TOKEN=🙈${GH}`)
+})
+
+test('a placeholder copied a little wrong is never wrapped in another', async ($, on) => {
+  const { store } = await setup($, on)
+  for (const line of ['GITHUB_TOKEN 줄은 `<<secret:github-token:800ca8da1eb7x>>`', 'token <<secret:github-token:800ca8da1eb7>']) {
+    expect(await store(line)).toBe(line)
+  }
+})
+
+test('a request that still carries a known value is never sent', async ($, on) => {
+  const { store } = await setup($, on)
+  let conversation = 'nothing yet'
+  let sent = 0
+  on('session.messages', () => ({ value: [{ role: 'user', content: [{ type: 'text', text: conversation }] }] }) as never)
+  on('turn.step', async function* (_, e) {
+    sent++
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const step = async () => {
+    const stream = $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })
+    const chunks = []
+    for (let r = await stream.next(); ; r = await stream.next()) {
+      if (r.done) return { result: r.value, chunks }
+      chunks.push(r.value)
+    }
+  }
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  conversation = `token ${ph}`
+  expect((await step()).result.answer).toBe('ok')
+  expect(sent).toBe(1)
+  conversation = `[re-read after compaction] GITHUB_TOKEN=${GH}`
+  const { result, chunks } = await step()
+  expect(sent).toBe(1)
+  expect(result.answer).toContain('secret-guard')
+  expect(JSON.stringify(chunks)).not.toContain(GH)
+})
+
+test('after a resume, a value raw beside its own placeholder is caught by its id alone', async ($, on) => {
+  const salt = 'ab'.repeat(32)
+  mock.store(on, { salt })
+  let sent = 0
+  const id = await idFor(salt, GH)
+  let conversation = `summary: GITHUB_TOKEN=<<secret:github-token:${id}>>`
+  on('session.messages', () => ({ value: [{ role: 'user', content: [{ type: 'text', text: conversation }] }] }) as never)
+  on('turn.step', async function* (_, e) {
+    sent++
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const step = async () => {
+    const stream = $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })
+    for (let r = await stream.next(); ; r = await stream.next()) if (r.done) return r.value
+  }
+  expect((await step()).answer).toBe('ok')
+  conversation += `\n\nre-read: GITHUB_TOKEN=${GH}\nOTHER_TOKEN=${'gh' + 'p_' + 'Z9y8'.repeat(9)}`
+  expect((await step()).answer).toContain('secret-guard')
+  expect(sent).toBe(1)
+})
