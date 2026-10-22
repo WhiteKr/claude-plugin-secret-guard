@@ -3,7 +3,7 @@ import type { EngineInterface, Register, ToolCallInput } from 'claude-code'
 
 import type { SecretGuardVault } from '../types'
 import { IS_PLACEHOLDER, MIN_KNOWN, PLACEHOLDER, idFor, placeholder, randomSalt, scrub, substitute } from './detect'
-import { layout, mapStrings, markKnown, showPlain } from './display'
+import { layout, mapStrings, showPlain } from './display'
 import { drawMessage } from './reveal'
 
 type Block = { type: string; [field: string]: unknown }
@@ -127,7 +127,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The policy also rides on every row that had something redacted: a
+  // The policy also rides on every row that had something redacted (a
+  // prompt's beside it, at prompt.submit): a
   // higher-tier plugin can pass prompt.compose on past this mod, and the
   // model needs the rule exactly where it first meets a placeholder.
   on('session.append', async ($, e, next) => {
@@ -138,7 +139,7 @@ export const register: Register = on => {
       if (out !== text) isRedacted = true
       return out
     })
-    const noted = isRedacted && e.message.role === 'user' ? withNote(content) : content
+    const noted = isRedacted && e.message.role === 'user' && e.door !== 'prompt' ? withNote(content) : content
     // The row is checked whole before it is stored: a value a later block
     // revealed may sit raw in an earlier one.
     let checked = noted
@@ -157,6 +158,15 @@ export const register: Register = on => {
       ? next(e)
       : next({ ...e, message: { ...e.message, content: await mapTexts(e.message.content, () => HIDDEN) } }),
   )
+
+  // A prompt's note rides beside it as context the person never sees: a note
+  // in the typed text comes back into the box when the turn is rewound.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.command) return next(e)
+    const s = await scrubber($)
+    if ((await s.text(e.text)) === e.text) return next(e)
+    return next({ ...e, context: [...(e.context ?? []), NOTE] })
+  })
 
   on('prompt.attachment', async ($, e, next) => {
     const r = await next(e)
@@ -211,12 +221,10 @@ export const register: Register = on => {
     return parts ? drawMessage($, e, parts) : next(e)
   })
 
-  // A prompt is drawn as typed, so a value pasted raw is found by the vault.
+  // A prompt keeps the surface's own drawing, which a tree of this mod's would
+  // replace with a reply's; a value pasted raw is found by the vault.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    const known = await read($, vault)
-    const text = withoutNote(e.props.text)
-    const parts = layout(markKnown(text, known), known)
-    if (parts) return drawMessage($, e, parts)
+    const text = showPlain(withoutNote(e.props.text), await read($, vault))
     return text === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text } })
   })
 

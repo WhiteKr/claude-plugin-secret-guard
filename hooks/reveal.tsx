@@ -58,7 +58,7 @@ ${isSecret ? smear : ''}
 /** A message whose paragraphs holding a secret this mod draws, so a hover can reveal the value. */
 export function drawMessage(
   $: EngineInterface,
-  e: RenderInput<'AssistantMessage'> | RenderInput<'UserMessage'>,
+  e: RenderInput<'AssistantMessage'>,
   parts: Part[],
 ): RenderElement {
   const table = $.ui.resolve(e)

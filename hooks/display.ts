@@ -15,11 +15,6 @@ const HAS_PLACEHOLDER = new RegExp(PLACEHOLDER.source)
 
 const labelId = (m: RegExpMatchArray) => ({ label: m[1] ?? m[3] ?? '', id: m[2] ?? m[4] ?? '' })
 
-const shownValue = (vault: SecretGuardVault, m: RegExpMatchArray) => {
-  const { label, id } = labelId(m)
-  return vault[id]?.value ?? label
-}
-
 // The vault sorted longest value first, kept while the vault object is the same.
 let sortedFor: SecretGuardVault | undefined
 let sorted: [string, { label: string; value: string }][] = []
@@ -42,9 +37,15 @@ export function markKnown(text: string, vault: SecretGuardVault): string {
   return out
 }
 
-/** For text drawn as is (a tool row's input or output): the icon before the value. */
+/**
+ * For text drawn as is (a prompt, a tool row's input or output): the icon
+ * before the value. A placeholder the vault lacks stays as written.
+ */
 export function showPlain(text: string, vault: SecretGuardVault): string {
-  return markKnown(text, vault).replace(SHOWN, (...m) => ICON + shownValue(vault, m as unknown as RegExpMatchArray))
+  return markKnown(text, vault).replace(SHOWN, (...m) => {
+    const value = vault[labelId(m as unknown as RegExpMatchArray).id]?.value
+    return value === undefined ? m[0] : ICON + value
+  })
 }
 
 export type Piece = { text: string } | { secret: { label: string; value?: string } }

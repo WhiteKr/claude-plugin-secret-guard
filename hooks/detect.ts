@@ -114,6 +114,10 @@ export const IS_PLACEHOLDER = new RegExp(`^${PLACEHOLDER.source}$`)
 // wrapped again.
 const LOOSE_PLACEHOLDER = /<<secret:[A-Za-z0-9-]+:[^\s<>`'"]*>*/g
 
+// A placeholder quoted without its brackets (`url-password:afe8c904c2e6`) names a secret, it holds none.
+const LABELS = [...new Set([...RULES.map(rule => rule.kind), 'user'])].join('|')
+const BARE_PLACEHOLDER = new RegExp(String.raw`\b(?:secret:)?(?:${LABELS})(?:-b64)?:[0-9a-f]{12}\b`, 'g')
+
 const hex = (bytes: ArrayBuffer | Uint8Array) =>
   Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('')
 
@@ -181,9 +185,17 @@ const isExempt = (value: string, rule: Rule, m: RegExpMatchArray, isQuoted: bool
 const isWordChar = (c: string | undefined) => c !== undefined && /\w/.test(c)
 
 // A known value glued to more word characters (`postgres` in `postgresql`,
-// `Pa55word1` in `Pa55word123`) is part of another word.
-const isGlued = (text: string, start: number, end: number) =>
-  (isWordChar(text[start]) && isWordChar(text[start - 1])) || (isWordChar(text[end - 1]) && isWordChar(text[end]))
+// `Pa55word1` in `Pa55word123`) is part of another word. One that reads as a
+// word (`helpdesk`, no digit and one case) joined by `.` or `-` is part of a
+// host or a name (`helpdesk.zio.run`, `zio-helpdesk-api`); a token never is.
+const isGlued = (text: string, start: number, end: number) => {
+  const value = text.slice(start, end)
+  const isWord = !/\d/.test(value) && !(/[a-z]/.test(value) && /[A-Z]/.test(value.slice(1)))
+  const joins = (edge: number, near: number, far: number) =>
+    isWordChar(text[edge]) &&
+    (isWordChar(text[near]) || (isWord && /[.-]/.test(text[near] ?? '') && isWordChar(text[far])))
+  return joins(start, start - 1, start - 2) || joins(end - 1, end, end + 1)
+}
 
 function knownSpans(text: string, vault: SecretGuardVault): Span[] {
   const spans: Span[] = []
@@ -248,7 +260,7 @@ async function scrubOnce(
   idOf: (value: string) => Promise<string>,
 ): Promise<{ text: string; added: SecretGuardVault }> {
   const added: SecretGuardVault = {}
-  const held = Array.from(text.matchAll(LOOSE_PLACEHOLDER), m => ({
+  const held = Array.from([...text.matchAll(LOOSE_PLACEHOLDER), ...text.matchAll(BARE_PLACEHOLDER)], m => ({
     start: m.index ?? 0,
     end: (m.index ?? 0) + m[0].length,
   }))
