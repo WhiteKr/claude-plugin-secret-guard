@@ -114,6 +114,10 @@ export const IS_PLACEHOLDER = new RegExp(`^${PLACEHOLDER.source}$`)
 // wrapped again.
 const LOOSE_PLACEHOLDER = /<<secret:[A-Za-z0-9-]+:[^\s<>`'"]*>*/g
 
+// A placeholder quoted without its brackets (`url-password:afe8c904c2e6`) names a secret, it holds none.
+const LABELS = [...new Set([...RULES.map(rule => rule.kind), 'user'])].join('|')
+const BARE_PLACEHOLDER = new RegExp(String.raw`\b(?:secret:)?(?:${LABELS})(?:-b64)?:[0-9a-f]{12}\b`, 'g')
+
 const hex = (bytes: ArrayBuffer | Uint8Array) =>
   Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('')
 
@@ -248,7 +252,7 @@ async function scrubOnce(
   idOf: (value: string) => Promise<string>,
 ): Promise<{ text: string; added: SecretGuardVault }> {
   const added: SecretGuardVault = {}
-  const held = Array.from(text.matchAll(LOOSE_PLACEHOLDER), m => ({
+  const held = Array.from([...text.matchAll(LOOSE_PLACEHOLDER), ...text.matchAll(BARE_PLACEHOLDER)], m => ({
     start: m.index ?? 0,
     end: (m.index ?? 0) + m[0].length,
   }))
