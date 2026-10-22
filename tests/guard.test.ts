@@ -240,6 +240,9 @@ test('a quoted module path, class name, word or phrase is not a password, a quot
     'auth: Configured',
     'password = input("Password: ")',
     "token: 'Publish token'",
+    "read({ prompt: 'npm password: ', silent: true })",
+    'tokenData.cidr_whitelist = validCIDR',
+    'const authKey = _authKey',
   ].join('\n')
   expect(await store(text)).toBe(text)
   expect(await store('password: "' + 'Summer' + '2024!' + '"')).toMatch(/^password: "<<secret:password:[0-9a-f]{12}>>"$/)
@@ -267,6 +270,8 @@ test('plan, todo and local search tools never refuse a placeholder', async ($, o
   for (const input of [
     { tool: 'ExitPlanMode', plan: `1. write ${ph} into .env` },
     { tool: 'TodoWrite', todos: [{ content: `move ${ph} to .env`, status: 'pending' }] },
+    { tool: 'TaskCreate', subject: `move ${ph} to .env`, description: 'x' },
+    { tool: 'mcp__ccd_turn__update_plan', items: [{ content: `move ${ph}`, status: 'pending' }] },
   ]) {
     const r = await $.tool.call(input as never)
     expect(r.deny).toBeUndefined()

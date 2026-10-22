@@ -2,7 +2,14 @@ import type { SecretGuardVault } from '../types'
 
 // The value is the first of `groups` that matched (the whole match when none
 // is given); every pattern carries the `d` flag so its indices are exact.
-type Rule = { kind: string; pattern: RegExp; groups?: readonly number[]; isAssignment?: true }
+// `isDummy` turns down a match the pattern alone cannot tell from a non-secret.
+type Rule = {
+  kind: string
+  pattern: RegExp
+  groups?: readonly number[]
+  isAssignment?: true
+  isDummy?: (value: string, m: RegExpMatchArray) => boolean
+}
 
 type Span = { start: number; end: number; kind: string; value: string; priority: number }
 
@@ -10,13 +17,16 @@ const KNOWN = -1
 
 const NAME = String.raw`[\w.-]{0,40}(?:secret|token|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth(?!or)|credential)[\w.-]{0,40}`
 
+const FILE_EXT = String.raw`\.(?:ya?ml|json|toml|env|ini|cfg|conf|properties|xml|html?|md|txt|sh|[cm]?[jt]sx?|py|rb|go|rs|java|kt|php|cs|swift)`
+
 // Ordered by priority: when two spans start at the same place and are as long, the earlier rule names the kind.
 const RULES: readonly Rule[] = [
   { kind: 'private-key', pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/dg },
   { kind: 'github-token', pattern: /\bgh[pousr]_[A-Za-z0-9]{36,}/dg },
   { kind: 'github-token', pattern: /\bgithub_pat_[A-Za-z0-9_]{50,}/dg },
   { kind: 'anthropic-key', pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}/dg },
-  { kind: 'openai-key', pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/dg },
+  // A real key always has a digit; `sk-learn-pipeline-...` is a name.
+  { kind: 'openai-key', pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/dg, isDummy: value => !/\d/.test(value) },
   { kind: 'aws-access-key', pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/dg },
   { kind: 'slack-token', pattern: /\bxox[abposr]-[A-Za-z0-9-]{10,}/dg },
   { kind: 'gitlab-token', pattern: /\bglpat-[A-Za-z0-9_-]{20,}/dg },
@@ -27,12 +37,22 @@ const RULES: readonly Rule[] = [
   { kind: 'bearer-token', pattern: /\bBearer\s+([A-Za-z0-9._~+/=-]{16,})/dg, groups: [1] },
   // Values are printable ASCII: Read output marks line ends and spaces with
   // glyphs such as U+240A and U+00B7, which must not join the value.
-  { kind: 'url-password', pattern: /\b[a-z][a-z0-9+.-]*:\/\/(?:(?![:/@])[!-~])+:((?:(?![:/@])[!-~])+)(?=@)/dgi, groups: [1] },
+  // A password that repeats the user or the scheme (`postgres:postgres@`,
+  // `redis://default:redis@`) is a local default; the user may be empty.
+  {
+    kind: 'url-password',
+    pattern: /\b([a-z][a-z0-9+.-]*):\/\/((?:(?![:/@])[!-~])*):((?:(?![:/@])[!-~])+)(?=@)/dgi,
+    groups: [3],
+    isDummy: (value, m) => value === m[2] || value.toLowerCase() === m[1]!.toLowerCase(),
+  },
   // A quoted value runs to its closing quote; a bare one stops at whitespace, `;` or `,`.
+  // Key and value share a line. A key that is a file name (`test_auth.py`)
+  // or an ARN segment is none, nor is one followed by `::` (a test id) or
+  // `:12:` (a grep hit), where the assignment may come after.
   {
     kind: 'password',
     pattern: new RegExp(
-      String.raw`\b(${NAME})["']?[\s·→]*[:=][\s·→]*(?:"((?:(?!["\\])[ -~]){8,})"|'((?:(?!['\\])[ -~]){8,})'|((?:(?![;,"'\`])[!-~]){8,}))`,
+      String.raw`\b(?<!\barn:\S{0,100})(${NAME})(?<!${FILE_EXT})["']?[ \t·→]*(?::=|[:=](?![:=>]|\d+:))[ \t·→]*(?:"((?:(?!["\\])[ -~]){8,})"|'((?:(?!['\\])[ -~]){8,})'|((?:(?![;,"'\`])[!-~]){8,}))`,
       'dgi',
     ),
     groups: [2, 3, 4],
@@ -71,10 +91,10 @@ const isMasked = (value: string) => {
   return run !== null && run[0].length * 2 >= value.length
 }
 
-// Code on the right of a bare assignment: a dotted name, a camel or Pascal name, a call.
+// Code on the right of an assignment: a dotted name, a camel or Pascal name, a call.
 const CODE_NAME: readonly RegExp[] = [
   /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/,
-  /^[a-z]+(?:[A-Z][a-z]+)+$/,
+  /^_*[a-z]+(?:[A-Z][a-z]*)+$/,
   /^(?:[A-Z][a-z]+){2,}$/,
   /^[A-Za-z_$][\w$.]*\(/,
 ]
@@ -135,17 +155,35 @@ const KEY_REFERENCE = /(?:name|ref|path|file|url|uri|endpoint|header|id)$/i
 // URLs and filesystem paths.
 const LOCATION = /^(?:[a-z][a-z0-9+.-]*:\/\/|[~.]?\/)/i
 
-const isExempt = (value: string, rule: Rule, key: string, isQuoted: boolean) => {
-  if (EXEMPT.some(re => re.test(value)) || isMasked(value)) return true
+// Code in a bare value: a type (`string):`, `string[]`, `Record<string`), an
+// index or call, a negation. Such a password would need quoting in a shell.
+const BARE_CODE = /[()[\]{}<>]|^!/
+
+// Words in quotes: a label or a prompt (`'Publish token'`, `'npm password: '`).
+const PHRASE = /^[A-Za-z]+(?: [A-Za-z]+)+:? ?$/
+
+const isExempt = (value: string, rule: Rule, m: RegExpMatchArray, isQuoted: boolean) => {
+  if (EXEMPT.some(re => re.test(value)) || isMasked(value) || rule.isDummy?.(value, m)) return true
   if (!rule.isAssignment) return DIGEST.some(re => re.test(value))
+  const key = m[1] ?? ''
   if (DIGEST.some(re => re.test(value))) return DIGEST_KEY.test(key)
   if (KEY_REFERENCE.test(key) || LOCATION.test(value)) return true
-  const isMixed = /[a-z]/.test(value) && /[A-Z]/.test(value)
-  if (!/\d/.test(value) && !isMixed && !/[^\w.-]/.test(value)) return true
+  const hasDigit = /\d/.test(value)
+  // A leading capital is a word's (`Required`), not a mixed-case secret's.
+  const isMixed = /[a-z]/.test(value) && /[A-Z]/.test(value.slice(1))
+  if (!hasDigit && !isMixed && !/[^\w.-]/.test(value)) return true
   // Counts, timestamps and dates (`input_tokens: 123456789`, `secret_version: 2024-10-22`).
   if (!/[A-Za-z]/.test(value)) return true
-  return !isQuoted && CODE_NAME.some(re => re.test(value))
+  if (!isQuoted) return BARE_CODE.test(value) || CODE_NAME.some(re => re.test(value))
+  return !hasDigit && (PHRASE.test(value) || CODE_NAME.some(re => re.test(value)))
 }
+
+const isWordChar = (c: string | undefined) => c !== undefined && /\w/.test(c)
+
+// A known value glued to more word characters (`postgres` in `postgresql`,
+// `Pa55word1` in `Pa55word123`) is part of another word.
+const isGlued = (text: string, start: number, end: number) =>
+  (isWordChar(text[start]) && isWordChar(text[start - 1])) || (isWordChar(text[end - 1]) && isWordChar(text[end]))
 
 function knownSpans(text: string, vault: SecretGuardVault): Span[] {
   const spans: Span[] = []
@@ -155,6 +193,7 @@ function knownSpans(text: string, vault: SecretGuardVault): Span[] {
     if (!label.endsWith('-b64')) forms.push([base64(value), `${label}-b64`])
     for (const [form, kind] of forms) {
       for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + form.length)) {
+        if (isGlued(text, at, at + form.length)) continue
         spans.push({ start: at, end: at + form.length, kind, value: form, priority: KNOWN })
       }
     }
@@ -173,7 +212,7 @@ function ruleSpans(text: string): Span[] {
       const value = text.slice(start, end)
       // The bare-value alternative is the assignment rule's last group.
       const isQuoted = rule.isAssignment === true && group !== rule.groups?.at(-1)
-      if (isExempt(value, rule, rule.isAssignment ? (m[1] ?? '') : '', isQuoted)) continue
+      if (isExempt(value, rule, m, isQuoted)) continue
       spans.push({ start, end, kind: rule.kind, value, priority })
     }
   })
