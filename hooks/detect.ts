@@ -185,9 +185,17 @@ const isExempt = (value: string, rule: Rule, m: RegExpMatchArray, isQuoted: bool
 const isWordChar = (c: string | undefined) => c !== undefined && /\w/.test(c)
 
 // A known value glued to more word characters (`postgres` in `postgresql`,
-// `Pa55word1` in `Pa55word123`) is part of another word.
-const isGlued = (text: string, start: number, end: number) =>
-  (isWordChar(text[start]) && isWordChar(text[start - 1])) || (isWordChar(text[end - 1]) && isWordChar(text[end]))
+// `Pa55word1` in `Pa55word123`) is part of another word. One that reads as a
+// word (`helpdesk`, no digit and one case) joined by `.` or `-` is part of a
+// host or a name (`helpdesk.zio.run`, `zio-helpdesk-api`); a token never is.
+const isGlued = (text: string, start: number, end: number) => {
+  const value = text.slice(start, end)
+  const isWord = !/\d/.test(value) && !(/[a-z]/.test(value) && /[A-Z]/.test(value.slice(1)))
+  const joins = (edge: number, near: number, far: number) =>
+    isWordChar(text[edge]) &&
+    (isWordChar(text[near]) || (isWord && /[.-]/.test(text[near] ?? '') && isWordChar(text[far])))
+  return joins(start, start - 1, start - 2) || joins(end - 1, end, end + 1)
+}
 
 function knownSpans(text: string, vault: SecretGuardVault): Span[] {
   const spans: Span[] = []

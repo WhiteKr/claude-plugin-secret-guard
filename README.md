@@ -62,7 +62,7 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 - 사용자 이름이나 스킴과 같은 URL 비밀번호 (`postgres://postgres:postgres@localhost`, `amqp://guest:guest@`). 로컬 기본값이기 때문입니다.
 - `sk-learn-…`처럼 숫자가 없는 하이픈 이름
 
-한 번 본 값은 원문 그대로 나타나도, base64로 나타나도 같은 방식으로 가립니다. 다만 더 긴 단어의 일부일 때는 가리지 않습니다. `Pa55word1`을 가렸어도 `Pa55word123`은 그대로 둡니다.
+한 번 본 값은 원문 그대로 나타나도, base64로 나타나도 같은 방식으로 가립니다. 다만 더 긴 단어의 일부일 때는 가리지 않습니다. `Pa55word1`을 가렸어도 `Pa55word123`은 그대로 둡니다. 숫자 없는 단어 같은 값(`helpdesk`)은 `.`이나 `-`로 이어진 도메인과 이름(`helpdesk.zio.run`, `zio-helpdesk-api`) 속에서도 가리지 않습니다.
 
 ## 명령
 
