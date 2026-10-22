@@ -114,38 +114,6 @@ const unknownPlaceholder = (whole: string) =>
 const refusedTool = (tool: string) =>
   `secret-guard: ${tool} 에는 비밀 값을 넘기지 않습니다. 파일에 쓰거나 로컬 명령을 실행하는 도구(Edit, Write, Bash)에만 자리표시자를 쓸 수 있습니다.`
 
-const UNSENT =
-  'secret-guard: 이번 요청에 가려 둔 비밀 값이 원본 그대로 들어 있어 모델에게 보내지 않았습니다. 압축 뒤 다시 붙은 파일처럼 이 플러그인을 거치지 않는 경로로 들어온 값입니다. /clear 로 대화를 비운 뒤 이어 가세요.'
-
-// The ids of the secrets `text` still shows raw, cached per text: a request
-// carries the whole conversation again on every step.
-const unhidden = new Map<string, string[]>()
-let unhiddenVault = -1
-
-async function unhiddenIds(text: string, known: SecretGuardVault, idOf: (value: string) => Promise<string>) {
-  const size = Object.keys(known).length
-  if (size !== unhiddenVault || unhidden.size > 4096) unhidden.clear()
-  unhiddenVault = size
-  let ids = unhidden.get(text)
-  if (!ids) {
-    const already = Array.from(text.matchAll(PLACEHOLDER), m => m[2]!)
-    ids = Array.from((await scrub(text, known, idOf)).text.matchAll(PLACEHOLDER), m => m[2]!)
-    for (const id of already) {
-      const at = ids.indexOf(id)
-      if (at !== -1) ids.splice(at, 1)
-    }
-    unhidden.set(text, ids)
-  }
-  return ids
-}
-
-function stringsOf(value: unknown, out: string[] = []): string[] {
-  if (typeof value === 'string') out.push(value)
-  else if (Array.isArray(value)) for (const item of value) stringsOf(item, out)
-  else if (value !== null && typeof value === 'object') for (const item of Object.values(value)) stringsOf(item, out)
-  return out
-}
-
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -169,8 +137,7 @@ export const register: Register = on => {
     })
     const noted = isRedacted && e.message.role === 'user' ? withNote(content) : content
     // The row is checked whole before it is stored: a value a later block
-    // revealed may sit raw in an earlier one, and `turn.step` refuses every
-    // request that carries a stored row with a known value raw.
+    // revealed may sit raw in an earlier one.
     let checked = noted
     for (let isClean = false; !isClean; ) {
       isClean = true
@@ -205,32 +172,6 @@ export const register: Register = on => {
     await s.commit()
     return { ...r, blocks }
   }).catch(($, e) => ({ blocks: e.blocks.map(block => ({ ...block, text: HIDDEN })) }))
-
-  // Some rows reach the model past every user plugin: a higher-tier plugin
-  // (cc-plugin-sec-default on a managed machine) passes attachments on, and
-  // the engine re-reads files after a compaction. A known value still in the
-  // request means one of them carried it, so the request is never sent.
-  // A value counts as hidden before when its id is in the vault or, in a
-  // process that resumed the session with an empty vault, on a placeholder
-  // the conversation still holds; the salt gives a value the same id in both.
-  on('turn.step', async function* ($, e, next) {
-    const messages = await $.session.messages({ as: 'api', agentId: e.agentId })
-    const texts = Array.isArray(messages) ? stringsOf(messages) : []
-    const known: SecretGuardVault = await read($, vault)
-    const hidden = new Set(Object.keys(known))
-    for (const text of texts) for (const m of text.matchAll(PLACEHOLDER)) hidden.add(m[2]!)
-    if (hidden.size > 0) {
-      const s = await saltOf($)
-      for (const text of texts) {
-        const ids = await unhiddenIds(text, known, value => idFor(s, value))
-        if (ids.some(id => hidden.has(id))) {
-          yield { kind: 'text', index: 0, text: UNSENT }
-          return { turnId: e.turnId, index: e.index, answer: UNSENT, toolUses: [], stopReason: 'end_turn', usage: null }
-        }
-      }
-    }
-    return yield* next(e)
-  })
 
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)

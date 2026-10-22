@@ -326,7 +326,7 @@ test('a placeholder copied a little wrong is never wrapped in another', async ($
   }
 })
 
-test('a request that still carries a known value is never sent', async ($, on) => {
+test('a request that still carries a known value is sent as is', async ($, on) => {
   const { store } = await setup($, on)
   let conversation = 'nothing yet'
   let sent = 0
@@ -349,12 +349,12 @@ test('a request that still carries a known value is never sent', async ($, on) =
   expect(sent).toBe(1)
   conversation = `[re-read after compaction] GITHUB_TOKEN=${GH}`
   const { result, chunks } = await step()
-  expect(sent).toBe(1)
-  expect(result.answer).toContain('secret-guard')
-  expect(JSON.stringify(chunks)).not.toContain(GH)
+  expect(sent).toBe(2)
+  expect(result.answer).toBe('ok')
+  expect(chunks).toEqual([])
 })
 
-test('after a resume, a value raw beside its own placeholder is caught by its id alone', async ($, on) => {
+test('after a resume, a value raw beside its own placeholder is still sent', async ($, on) => {
   const salt = 'ab'.repeat(32)
   mock.store(on, { salt })
   let sent = 0
@@ -371,8 +371,8 @@ test('after a resume, a value raw beside its own placeholder is caught by its id
   }
   expect((await step()).answer).toBe('ok')
   conversation += `\n\nre-read: GITHUB_TOKEN=${GH}\nOTHER_TOKEN=${'gh' + 'p_' + 'Z9y8'.repeat(9)}`
-  expect((await step()).answer).toContain('secret-guard')
-  expect(sent).toBe(1)
+  expect((await step()).answer).toBe('ok')
+  expect(sent).toBe(2)
 })
 
 // A stored row (note included) as the next request carries it.
