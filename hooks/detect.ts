@@ -58,6 +58,11 @@ const EXEMPT: readonly RegExp[] = [
   /^<.*>$/,
   /^\*+$/,
   /^(.)\1*$/,
+  // A format or template slot the value is filled into later: printf and
+  // Python `%` styles, `str.format` and f-string braces. Percent-encoding
+  // (`%2F`) is a real password's, so the conversion letter is lowercase.
+  /^%(?:\([\w.]+\))?[-+ #0]*\d*(?:\.\d+)?[sdvqr]$/,
+  /^\{[\w.!:[\]]*\}$/,
 ]
 
 // A masked dummy (`sk-xxxxxxxxxxxx`, `ab12......`): the run covers most of the value.

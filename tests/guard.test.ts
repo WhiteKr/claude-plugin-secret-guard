@@ -160,6 +160,19 @@ test('a URL keeps its user and host, only the password is redacted', async ($, o
   expect(stored).toMatch(/^DATABASE_URL=postgres:\/\/u:<<secret:url-password:[0-9a-f]{12}>>@h\/db$/)
 })
 
+test('format and template slots in a URL pass untouched, a percent-encoded password does not', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = [
+    `printf 'proxy=http://svc:%s@10.0.0.1:3128\\n' "$p"`,
+    'url = "postgres://%(user)s:%(password)s@%(host)s/db"',
+    'fmt.Sprintf("amqp://guest:%v@%s:5672/", pw, host)',
+    'f"postgres://{user}:{password}@{host}/db"',
+    '"redis://app:{0}@cache:6379".format(pw)',
+  ].join('\n')
+  expect(await store(text)).toBe(text)
+  expect(await store('postgres://u:' + 'a%2Fb' + '@h/db')).toMatch(/^postgres:\/\/u:<<secret:url-password:[0-9a-f]{12}>>@h\/db$/)
+})
+
 test('/secret registers a value, fills the prompt, and scrubs it from later rows', async ($, on) => {
   const { store } = await setup($, on)
   const filled: string[] = []
