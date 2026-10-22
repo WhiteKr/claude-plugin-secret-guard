@@ -264,6 +264,19 @@ test('a known value never replaces part of a longer word', async ($, on) => {
   expect(await store(`echo "${pw}"`)).toMatch(/^echo "<<secret:password:[0-9a-f]{12}>>"$/)
 })
 
+test('a known word joined to a host or a name by a dot or a hyphen stays, a token does not', async ($, on) => {
+  const { store } = await setup($, on)
+  const word = 'front' + 'desk'
+  await store(`postgresql://app:${word}@db:5432/x`)
+  for (const text of [`https://${word}.zio.run/api`, `/srv/${word}.zio.run/src`, `Zio-${word}-zio-run`]) {
+    expect(await store(text)).toBe(text)
+  }
+  for (const text of [`PGPASSWORD=${word}`, `the password is ${word}.`]) expect(await store(text)).not.toContain(word)
+  const pw = 'Pa55' + 'word1'
+  await store(`DB_PASSWORD=${pw}`)
+  expect(await store(`https://x.io/${pw}.txt`)).not.toContain(pw)
+})
+
 test('plan, todo and local search tools never refuse a placeholder', async ($, on) => {
   const { store, calls } = await setup($, on)
   const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
