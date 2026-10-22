@@ -374,3 +374,75 @@ test('after a resume, a value raw beside its own placeholder is caught by its id
   expect((await step()).answer).toContain('secret-guard')
   expect(sent).toBe(1)
 })
+
+// A stored row (note included) as the next request carries it.
+async function guardedStep($: Engine, on: On, conversation: () => string) {
+  let sent = 0
+  on('session.messages', () => ({ value: [{ role: 'user', content: [{ type: 'text', text: conversation() }] }] }) as never)
+  on('turn.step', async function* (_, e) {
+    sent++
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  return async () => {
+    const stream = $.turn.step({ turnId: 't', index: 0, model: 'm', messageCount: 1 })
+    for (let r = await stream.next(); ; r = await stream.next()) if (r.done) return { answer: r.value.answer, sent }
+  }
+}
+
+const storedRow = (row: SessionAppendInput | undefined) =>
+  (row?.message.content ?? [])
+    .map(b => (b.type === 'tool_result' ? JSON.stringify(b.content) : b.type === 'text' ? String(b.text) : ''))
+    .join('\n')
+
+test('the placeholder notation in docs and in the guard note is never taken for a secret', async ($, on) => {
+  const session = mock.session(on)
+  mock.store(on)
+  let stored = ''
+  const step = await guardedStep($, on, () => stored)
+  const doc = '모델은 실제 값 대신 `<<secret:LABEL:ID>>` 자리표시자를 봅니다.'
+  await $.session.append(toolResult(`${doc}\nGITHUB_TOKEN=${GH}`))
+  stored = storedRow(session.appended().at(-1))
+  expect(stored).toContain(doc)
+  expect(stored).toContain('[secret-guard] Values shaped <<secret:LABEL:ID>>')
+  expect(await step()).toEqual({ answer: 'ok', sent: 1 })
+})
+
+test('a value found once is hidden wherever else it shows in the same result', async ($, on) => {
+  const session = mock.session(on)
+  mock.store(on)
+  let stored = ''
+  const step = await guardedStep($, on, () => stored)
+  const pw = 'Pw9xQ2' + 'mZ7kLb'
+  await $.session.append(toolResult(`proxy=http://svc:${pw}@10.0.0.1:3128\nproxyauth ${pw} --setenv`))
+  stored = storedRow(session.appended().at(-1))
+  expect(stored).not.toContain(pw)
+  expect(await step()).toEqual({ answer: 'ok', sent: 1 })
+})
+
+test('a value found in a later block of a row is hidden in the earlier blocks too', async ($, on) => {
+  const session = mock.session(on)
+  mock.store(on)
+  let stored = ''
+  const step = await guardedStep($, on, () => stored)
+  const pw = 'Qa7wE3' + 'rT9yUi'
+  await $.session.append({
+    ...toolResult(''),
+    message: {
+      type: 'user',
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'tu-blocks',
+          content: [
+            { type: 'text', text: `first: proxyauth ${pw}` },
+            { type: 'text', text: `second: http://svc:${pw}@db.internal:5432` },
+          ],
+        },
+      ],
+    },
+  })
+  stored = storedRow(session.appended().at(-1))
+  expect(stored).not.toContain(pw)
+  expect(await step()).toEqual({ answer: 'ok', sent: 1 })
+})

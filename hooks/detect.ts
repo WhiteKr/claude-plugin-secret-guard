@@ -83,9 +83,11 @@ export const placeholder = (label: string, id: string) => `<<secret:${label}:${i
 
 export const IS_PLACEHOLDER = new RegExp(`^${PLACEHOLDER.source}$`)
 
-// A placeholder the model copied a little wrong (an id cut short, one `>`)
-// reads as a `token: value` assignment and would be wrapped again.
-const LOOSE_PLACEHOLDER = /<<secret:[a-z0-9-]+:[^\s<>`'"]*>*/g
+// A placeholder the model copied a little wrong (an id cut short, one `>`),
+// or the notation itself (`<<secret:LABEL:ID>>` in the docs and in the note
+// on every redacted row), reads as a `secret: value` assignment and would be
+// wrapped again.
+const LOOSE_PLACEHOLDER = /<<secret:[A-Za-z0-9-]+:[^\s<>`'"]*>*/g
 
 const hex = (bytes: ArrayBuffer | Uint8Array) =>
   Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('')
@@ -181,6 +183,22 @@ const overlaps = (a: { start: number; end: number }, b: { start: number; end: nu
  * (and their base64), then whatever the rules find. Returns the new entries.
  */
 export async function scrub(
+  text: string,
+  vault: SecretGuardVault,
+  idOf: (value: string) => Promise<string>,
+): Promise<{ text: string; added: SecretGuardVault }> {
+  // A value a rule finds in one spot (a URL's password) can sit elsewhere in
+  // the same text in a shape no rule matches; scrub again with it known.
+  const added: SecretGuardVault = {}
+  for (let current = text; ; ) {
+    const r = await scrubOnce(current, { ...vault, ...added }, idOf)
+    Object.assign(added, r.added)
+    if (r.text === current) return { text: current, added }
+    current = r.text
+  }
+}
+
+async function scrubOnce(
   text: string,
   vault: SecretGuardVault,
   idOf: (value: string) => Promise<string>,

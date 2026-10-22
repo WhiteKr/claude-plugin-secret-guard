@@ -167,9 +167,21 @@ export const register: Register = on => {
       if (out !== text) isRedacted = true
       return out
     })
-    await s.commit()
     const noted = isRedacted && e.message.role === 'user' ? withNote(content) : content
-    return next({ ...e, message: { ...e.message, content: noted } })
+    // The row is checked whole before it is stored: a value a later block
+    // revealed may sit raw in an earlier one, and `turn.step` refuses every
+    // request that carries a stored row with a known value raw.
+    let checked = noted
+    for (let isClean = false; !isClean; ) {
+      isClean = true
+      checked = await mapTexts(checked, async text => {
+        const out = await s.text(text)
+        if (out !== text) isClean = false
+        return out
+      })
+    }
+    await s.commit()
+    return next({ ...e, message: { ...e.message, content: checked } })
   }).catch(async ($, e, next) =>
     next.called
       ? next(e)
