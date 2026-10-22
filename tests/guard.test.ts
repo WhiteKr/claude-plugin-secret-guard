@@ -361,19 +361,45 @@ test('a reply draws its secret paragraphs itself, the value behind a hover, the 
   expect(plain.text).toBe('비밀 없음')
 })
 
-test('a user row draws a pasted value and a placeholder as the hover chip, and never the note', async ($, on) => {
+test('a user row keeps its own drawing, the value marked and never the note; a pasted placeholder stays as typed', async ($, on) => {
   const { store, draw } = await setup($, on)
   const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
   const note = '[secret-guard] Values shaped <<secret:LABEL:ID>> above are redacted credentials. Copy them verbatim into tool inputs; the real value is substituted when the tool runs. Never ask the user for the value or try to recover it.'
-  const user = (text: string) => ({ surface: 'desktop', component: 'UserMessage', requestId: 'u1', props: { text, origin: { kind: 'unclassified' }, isExpanded: false } }) as never
-  for (const text of [`token ${ph}\n\n${note}`, `token ${GH}`]) {
-    const tree = JSON.stringify(await $.ui.render(user(text)))
-    expect(tree).toContain('eye-off')
-    expect(tree).toContain(GH)
-    expect(tree).not.toContain('[secret-guard] ')
+  const user = (text: string) => draw('UserMessage', { text, origin: { kind: 'unclassified' }, isExpanded: false })
+  for (const text of [`token ${ph}\n\n${note}`, `token ${GH}`]) expect((await user(text)).text).toBe(`token 🙈${GH}`)
+  expect((await user(`hello\n\n${note}`)).text).toBe('hello')
+  const pasted = '`<<secret:url-password:' + 'afe8c9' + '04c2e6>>_sadfasl`'
+  expect((await user(pasted)).text).toBe(pasted)
+})
+
+test('a prompt with a secret tells the model beside it, never in the text the person typed', async ($, on) => {
+  const session = mock.session(on)
+  mock.store(on)
+  const submitted: { text: string; context?: readonly string[] }[] = []
+  on('prompt.submit', (_, e) => {
+    submitted.push({ text: e.text, context: e.context })
+    return { text: e.text, context: e.context }
+  })
+  await $.prompt.submit({ text: `token ${GH}` })
+  await $.prompt.submit({ text: 'hello there' })
+  expect(submitted[0]?.context?.join('\n')).toContain('[secret-guard] Values shaped')
+  expect(submitted[1]?.context ?? []).toEqual([])
+  await $.session.append({
+    message: { type: 'user', role: 'user', content: [{ type: 'text', text: `token ${GH}` }] },
+    door: 'prompt',
+    origin: { kind: 'composer' },
+    uuid: 'prompt-1',
+  } as never)
+  const typed = String(session.appended().at(-1)?.message.content[0]?.text)
+  expect(typed).toMatch(/^token <<secret:github-token:[0-9a-f]{12}>>$/)
+})
+
+test('a placeholder written without its brackets is never taken for a secret', async ($, on) => {
+  const { store } = await setup($, on)
+  const id = 'afe8c9' + '04c2e6'
+  for (const text of [`url-password:${id}`, `secret:url-password:${id}`, `(github-token-b64:${id})`]) {
+    expect(await store(text)).toBe(text)
   }
-  const plain = await draw('UserMessage', { text: `hello\n\n${note}`, origin: { kind: 'unclassified' }, isExpanded: false })
-  expect(plain.text).toBe('hello')
 })
 
 test('only file and process tools get the real value; network and MCP tools are refused, handoff tools keep the placeholder', async ($, on) => {
