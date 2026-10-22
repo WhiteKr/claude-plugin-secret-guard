@@ -12,14 +12,17 @@ const vault = atom({ plugin: 'secret-guard', key: 'vault' } as const, {})
 
 const HIDDEN = '[secret-guard: 내용을 검사하지 못해 숨김]'
 
-// What a tool does with a placeholder in its input. Only tools that write a
-// file or run a local process get the real value; tools that hand text to
-// another model or to a person keep the placeholder (a subagent's own tool
-// calls resolve it from the same session vault); every other tool, the network
-// and MCP ones above all, is refused, so text injected into the conversation
-// cannot have a secret sent out.
-const SUBSTITUTES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'])
-const KEEPS = new Set(['Agent', 'Task', 'SendMessage', 'AskUserQuestion'])
+// What a tool does with a placeholder in its input. Tools that read or write a
+// local file or run a local process get the real value; their output is
+// scrubbed again. Tools that reach the network get nothing: they would act on
+// the placeholder text itself (an MCP call could store it as a CI secret), and
+// text injected into the conversation cannot have a secret sent out. The
+// desktop app's own MCP tools (`mcp__ccd_*`, its plan and session cards) stay
+// local. Every other tool keeps the placeholder: a handoff to a subagent
+// resolves it from the same session vault, and a plan or task list only shows it.
+const SUBSTITUTES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Read', 'Grep', 'Glob'])
+const isNetwork = (tool: string) =>
+  tool === 'WebFetch' || tool === 'WebSearch' || (tool.startsWith('mcp__') && !tool.startsWith('mcp__ccd_'))
 
 const HAS_PLACEHOLDER = new RegExp(PLACEHOLDER.source)
 
@@ -175,8 +178,8 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
-    if (KEEPS.has(tool)) return next(e)
     if (!SUBSTITUTES.has(tool)) {
+      if (!isNetwork(tool)) return next(e)
       const input = Object.fromEntries(Object.entries(e).filter(([key]) => !RESERVED.has(key)))
       return HAS_PLACEHOLDER.test(JSON.stringify(input)) ? { deny: refusedTool(tool) } : next(e)
     }

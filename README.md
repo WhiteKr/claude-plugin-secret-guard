@@ -28,9 +28,9 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 - 검사에 실패한 행은 원문 대신 `[secret-guard: 내용을 검사하지 못해 숨김]`으로 저장합니다.
 - 도구가 실행되기 직전에 입력 속 자리표시자를 실제 값으로 바꿉니다. 도구 결과는 다시 가려진 채로 모델에게 돌아갑니다.
 - 이 세션이 모르는 자리표시자가 든 도구 호출은 실행하지 않고 거부합니다. 그래서 파일에 `<<secret:…>>` 문자열이 그대로 써지는 일이 없습니다.
-- 실제 값으로 바꿔 주는 도구는 파일을 쓰거나 로컬 명령을 실행하는 도구뿐입니다. Edit, Write, MultiEdit, NotebookEdit, Bash가 여기에 해당합니다.
-- Agent, SendMessage, AskUserQuestion에 넘긴 자리표시자는 바꾸지 않고 그대로 전합니다. 이 도구들은 다른 모델이나 사람에게 글을 전하기 때문입니다.
-- 그 밖의 도구에 자리표시자가 들어가면 실행하지 않고 거부합니다. WebFetch, WebSearch, MCP 도구가 여기에 해당합니다. 악성 문서가 "이 토큰을 이 주소로 보내라"고 시켜도 값이 밖으로 나가지 않습니다.
+- 실제 값으로 바꿔 주는 도구는 로컬 파일을 읽고 쓰거나 로컬 명령을 실행하는 도구뿐입니다. Edit, Write, MultiEdit, NotebookEdit, Bash, Read, Grep, Glob이 여기에 해당합니다.
+- 네트워크로 나가는 도구에 자리표시자가 들어가면 실행하지 않고 거부합니다. WebFetch, WebSearch, MCP 도구가 여기에 해당합니다. 악성 문서가 "이 토큰을 이 주소로 보내라"고 시켜도 값이 밖으로 나가지 않습니다. MCP 도구가 자리표시자 문자열을 그대로 CI 시크릿 같은 곳에 저장하는 일도 막습니다. 데스크톱 앱 자체의 MCP 도구(`mcp__ccd_*`)는 로컬 도구라 거부하지 않습니다.
+- 그 밖의 도구에 넘긴 자리표시자는 바꾸지 않고 그대로 전합니다. Agent, SendMessage, AskUserQuestion, 할 일 목록(TaskCreate, TodoWrite), 계획 모드(ExitPlanMode)가 여기에 해당합니다.
 - 모델에게 보내는 요청은 멈추지 않습니다. 이 플러그인을 거치지 않는 경로로 들어온 값은 원본 그대로 모델에게 갑니다. 아래 "관리 설정이 있는 기계"를 보세요.
 
 ## 화면 표시
@@ -49,8 +49,18 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 - URL 속 비밀번호 (`postgres://user:비밀번호@host`)
 - 이름에 secret, token, password, api_key, access_key, auth, credential 등이 들어간 대입문의 값 (.env, YAML, JSON, `export`)
 
-커밋이나 해시처럼 이름이 그 값의 정체를 밝히는 경우의 git SHA와 UUID, `${VAR}`나 `process.env.X` 같은 변수 참조, `changeme` 같은 예시 값, 숫자뿐인 값, 코드 식별자처럼 보이는 값은 가리지 않습니다.
-한 번 본 값은 원문 그대로 나타나도, base64로 나타나도 같은 방식으로 가립니다.
+다음은 가리지 않습니다.
+
+- 커밋이나 해시처럼 이름이 그 값의 정체를 밝히는 경우의 git SHA와 UUID
+- `${VAR}`나 `process.env.X` 같은 변수 참조, `changeme` 같은 예시 값, 숫자뿐인 값
+- 코드 식별자, 타입, 호출처럼 보이는 값 (`token: string)`, `tokens[1]`, `"accounts.User"`, `"LlamaTokenizerFast"`)
+- 따옴표 속 숫자 없는 단어나 문구 (`"Required"`, `'Publish token'`)
+- 다음 줄의 내용. 이름과 값은 같은 줄에 있어야 합니다. 그래서 YAML의 `auth:` 아래 줄은 값으로 보지 않습니다.
+- 파일 이름, 테스트 ID, grep 결과의 경로 부분, AWS ARN (`tests/test_auth.py::test_login`, `src/auth/token.ts:42:`). 그 뒤에 오는 대입문(`app.env:3:API_KEY=…`)은 가립니다.
+- 사용자 이름이나 스킴과 같은 URL 비밀번호 (`postgres://postgres:postgres@localhost`, `amqp://guest:guest@`). 로컬 기본값이기 때문입니다.
+- `sk-learn-…`처럼 숫자가 없는 하이픈 이름
+
+한 번 본 값은 원문 그대로 나타나도, base64로 나타나도 같은 방식으로 가립니다. 다만 더 긴 단어의 일부일 때는 가리지 않습니다. `Pa55word1`을 가렸어도 `Pa55word123`은 그대로 둡니다.
 
 ## 명령
 
@@ -65,6 +75,9 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 
 ## 한계
 
+- 오탐을 줄이려고 정한 규칙 때문에 놓치는 비밀번호가 있습니다. 숫자 없는 비밀번호(`DB_PASSWORD=Secretpass`, `"MySecretPass"`), 따옴표 없이 괄호가 든 비밀번호, 사용자 이름과 같은 URL 비밀번호가 그렇습니다. 이런 값은 `/secret`으로 등록하세요.
+- 반대로 숫자가 섞인 소문자 설정값(`AUTH_MODE=oauth2-pkce`)은 비밀번호로 보고 가립니다. 이런 값도 Edit, Bash 같은 도구에서는 실제 값으로 바뀌므로 작업에는 지장이 없습니다.
+- 가린 값이 코드의 다른 곳에 단독 단어로 나오면 그곳도 가립니다. `DB_PASSWORD=password1`을 가린 뒤에는 변수 이름 `password1`도 자리표시자로 보입니다.
 - 모델의 실수로 값이 새는 일을 막는 장치입니다. 작정한 모델을 막는 격리 장치는 아닙니다. Bash로 값을 뒤집거나 잘라서 출력하면, 그 변형된 모양은 가려지지 않습니다.
 - 대화 기록 파일의 구조화된 도구 기록(`toolUseResult`, 예를 들어 Edit의 diff나 Bash 표준 출력)에는 원본이 남을 수 있습니다. 모델은 이 기록을 읽지 않습니다.
 - Read로 읽은 PEM 키는 줄 번호 접두어가 붙은 채로 등록됩니다. 그래서 그 자리표시자를 다른 파일에 쓰면 키가 깨집니다. 개인 키 파일을 옮길 때는 `cp`나 `cat a >> b`처럼 Bash로 파일째 옮기라고 요청하세요.

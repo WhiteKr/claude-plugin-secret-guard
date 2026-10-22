@@ -173,6 +173,115 @@ test('format and template slots in a URL pass untouched, a percent-encoded passw
   expect(await store('postgres://u:' + 'a%2Fb' + '@h/db')).toMatch(/^postgres:\/\/u:<<secret:url-password:[0-9a-f]{12}>>@h\/db$/)
 })
 
+test('a URL password that repeats the user or the scheme is a local default; an empty user still hides the password', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = [
+    'postgresql://postgres:postgres@localhost:5432/postgres',
+    'amqp://guest:guest@localhost:5672/',
+    'mysql://root:root@127.0.0.1:3306/app',
+    'redis://default:redis@localhost:6379',
+  ].join('\n')
+  expect(await store(text)).toBe(text)
+  expect(await store('redis://:' + 'Zq8Wm3Xk2Pv9' + '@cache:6379')).toMatch(/^redis:\/\/:<<secret:url-password:[0-9a-f]{12}>>@cache:6379$/)
+})
+
+test('a key on one line is never paired with the next line', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = [
+    'auth:',
+    '  username: admin',
+    'tokens:',
+    '  maxLength: 2048',
+    'token:',
+    '  audience: api-server',
+    'env:',
+    '  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}',
+  ].join('\n')
+  expect(await store(text)).toBe(text)
+})
+
+test('a key inside a path, a test id or an ARN is left alone, and an assignment after it is still found', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = [
+    'tests/test_auth.py::test_login_with_valid_credentials PASSED',
+    'tests/test_auth.py::TestToken::test_refresh_expired FAILED',
+    'src/auth/token.ts:42:export function refreshToken(token: string) {',
+    'arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/db-AbCdEf',
+  ].join('\n')
+  expect(await store(text)).toBe(text)
+  const pw = 'Hx7k2mQ9' + 'pL'
+  expect(await store(`config/secrets.yml:12:password: ${pw}`)).toMatch(
+    /^config\/secrets\.yml:12:password: <<secret:password:[0-9a-f]{12}>>$/,
+  )
+})
+
+test('types and code on the right of a key are left alone', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = [
+    'export function parseDir(token: string): Dir {',
+    'const fmt = (tokens: number): string => String(tokens)',
+    'isSecret: boolean): void',
+    'tokens: string[]',
+    'auth: Record<string, string>',
+    'secret: Optional[str] = None',
+    'const tokenValue = tokens[1]',
+    'const auth = !req.headers',
+  ].join('\n')
+  expect(await store(text)).toBe(text)
+})
+
+test('a quoted module path, class name, word or phrase is not a password, a quoted password still is', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = [
+    'self.auth_backend = "django.contrib.auth.backends.ModelBackend"',
+    'AUTH_USER_MODEL = "accounts.User"',
+    '"tokenizer_class": "LlamaTokenizerFast"',
+    '"auth": "Required",',
+    'auth: Configured',
+    'password = input("Password: ")',
+    "token: 'Publish token'",
+    "read({ prompt: 'npm password: ', silent: true })",
+    'tokenData.cidr_whitelist = validCIDR',
+    'const authKey = _authKey',
+  ].join('\n')
+  expect(await store(text)).toBe(text)
+  expect(await store('password: "' + 'Summer' + '2024!' + '"')).toMatch(/^password: "<<secret:password:[0-9a-f]{12}>>"$/)
+})
+
+test('sk- in a hyphenated name is not an OpenAI key', async ($, on) => {
+  const { store } = await setup($, on)
+  const text = ['sk-learn-pipeline-module-for-classification', '<div class="sk-circle-bounce-spinner-wrapper-xl">'].join('\n')
+  expect(await store(text)).toBe(text)
+  expect(await store('sk-' + 'proj-' + 'Zx9Qw3'.repeat(5))).toMatch(/^<<secret:openai-key:[0-9a-f]{12}>>$/)
+})
+
+test('a known value never replaces part of a longer word', async ($, on) => {
+  const { store } = await setup($, on)
+  const pw = 'Pa55' + 'word1'
+  await store(`DB_PASSWORD=${pw}`)
+  const text = `${pw}23 and x${pw} stay`
+  expect(await store(text)).toBe(text)
+  expect(await store(`echo "${pw}"`)).toMatch(/^echo "<<secret:password:[0-9a-f]{12}>>"$/)
+})
+
+test('plan, todo and local search tools never refuse a placeholder', async ($, on) => {
+  const { store, calls } = await setup($, on)
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  for (const input of [
+    { tool: 'ExitPlanMode', plan: `1. write ${ph} into .env` },
+    { tool: 'TodoWrite', todos: [{ content: `move ${ph} to .env`, status: 'pending' }] },
+    { tool: 'TaskCreate', subject: `move ${ph} to .env`, description: 'x' },
+    { tool: 'mcp__ccd_turn__update_plan', items: [{ content: `move ${ph}`, status: 'pending' }] },
+  ]) {
+    const r = await $.tool.call(input as never)
+    expect(r.deny).toBeUndefined()
+    expect(JSON.stringify(calls.at(-1))).toContain(ph)
+  }
+  const grep = await $.tool.call({ tool: 'Grep', pattern: ph, path: '/repo' } as never)
+  expect(grep.deny).toBeUndefined()
+  expect(calls.at(-1)).toMatchObject({ tool: 'Grep', pattern: GH })
+})
+
 test('/secret registers a value, fills the prompt, and scrubs it from later rows', async ($, on) => {
   const { store } = await setup($, on)
   const filled: string[] = []
