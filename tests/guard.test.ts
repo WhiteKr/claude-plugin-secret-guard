@@ -28,12 +28,36 @@ const textOf = (row: SessionAppendInput | undefined) =>
     .join('\n')
     .replace(/\n\n\[secret-guard\] .*$/, '')
 
+// The host processes the guard starts, kept in memory: a Linux keychain
+// through `secret-tool`, and the files a Bash call reads its values from.
+function fakeHost(on: On, keychain = new Map<string, string>()) {
+  const files = new Map<string, string>()
+  const atCall: Map<string, string>[] = []
+  const ran: (readonly string[])[] = []
+  const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '' } }) as never
+  on('process.run', (_, e) => {
+    const { argv } = e
+    ran.push(argv)
+    const stdin = e.init?.stdin ?? ''
+    if (argv[0] === 'uname') return ok('Linux\n')
+    if (argv[0] === 'sh' && argv[2] === 'command -v secret-tool') return ok('/usr/bin/secret-tool\n')
+    if (argv[0] === 'secret-tool' && argv[1] === 'store') keychain.set(argv[argv.indexOf('id') + 1]!, stdin)
+    if (argv[0] === 'secret-tool' && argv[1] === 'lookup') return ok(keychain.get(argv[argv.indexOf('id') + 1]!) ?? '')
+    if (argv[0] === 'sh' && argv[2]?.includes('cat >')) files.set(`${argv[4]}/${argv[5]}`, stdin)
+    if (argv[0] === 'rm') for (const path of [...files.keys()]) if (path.startsWith(`${argv[2]}/`)) files.delete(path)
+    return ok()
+  })
+  return { keychain, files, atCall, ran }
+}
+
 async function setup($: Engine, on: On) {
   const session = mock.session(on)
   mock.store(on)
+  const host = fakeHost(on)
   const calls: ToolCallInput[] = []
   on('tool.call', (_, e) => {
     calls.push(e)
+    host.atCall.push(new Map(host.files))
     return { result: {} }
   })
   const drawn: Record<string, Record<string, unknown>> = {}
@@ -49,7 +73,7 @@ async function setup($: Engine, on: On) {
     await $.ui.render({ surface: 'desktop', component, requestId: 'r1', props } as never)
     return drawn[component] ?? {}
   }
-  return { store, calls, draw }
+  return { store, calls, draw, host }
 }
 
 test('a token in a tool result is stored as a placeholder, never raw', async ($, on) => {
@@ -88,12 +112,48 @@ test('an Edit carries the real value to the tool in both strings', async ($, on)
   expect(edit && 'new_string' in edit ? edit.new_string : '').toBe(`key: process.env.GH // ${GH}`)
 })
 
-test('Bash runs with the real value and its echo, plain or base64, is stored scrubbed', async ($, on) => {
+test('Bash reads the real value from a private file, never from its command line', async ($, on) => {
+  const { store, calls, host } = await setup($, on)
+  const token = (await store(`export GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const id = token.match(PLACEHOLDER)?.[2] ?? ''
+  await $.tool.call({ tool: 'Bash', command: `gh secret set GH_TOKEN --body ${token} && echo '${token}' "x ${token}"` })
+  const bash = calls.at(-1)
+  const command = String(bash && 'command' in bash ? bash.command : '')
+  expect(command).not.toContain(GH)
+  const read = command.match(/\$\(cat '([^']+)'\)/)?.[1] ?? ''
+  expect(read).toMatch(new RegExp(`/secret-guard-[0-9a-f]{16}/${id}$`))
+  expect(command).toBe(
+    `gh secret set GH_TOKEN --body "$(cat '${read}')" && echo ''"$(cat '${read}')"'' "x $(cat '${read}')"`,
+  )
+  expect(host.atCall.at(-1)?.get(read)).toBe(GH)
+  expect(host.files.size).toBe(0)
+  expect(host.ran.find(argv => argv[0] === 'sh' && argv[2]?.includes('cat >'))?.join(' ')).not.toContain(GH)
+})
+
+test('a Bash command with a heredoc takes the value as text, as before', async ($, on) => {
   const { store, calls } = await setup($, on)
   const token = (await store(`export GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
-  await $.tool.call({ tool: 'Bash', command: `gh secret set GH_TOKEN --body ${token}` })
+  await $.tool.call({ tool: 'Bash', command: `cat > .env <<'EOF'\nGITHUB_TOKEN=${token}\nEOF` })
   const bash = calls.at(-1)
-  expect(bash && 'command' in bash ? bash.command : '').toBe(`gh secret set GH_TOKEN --body ${GH}`)
+  expect(bash && 'command' in bash ? bash.command : '').toBe(`cat > .env <<'EOF'\nGITHUB_TOKEN=${GH}\nEOF`)
+})
+
+test('a new value goes to the keychain through stdin, and a value only the keychain holds still resolves', async ($, on) => {
+  const { store, calls, host } = await setup($, on)
+  const token = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  expect(host.keychain.get(token.match(PLACEHOLDER)?.[2] ?? '')).toBe(GH)
+  expect(host.ran.some(argv => argv.includes(GH))).toBe(false)
+
+  const older = 'gh' + 'p_' + 'Q7w3'.repeat(9)
+  host.keychain.set('0a1b2c' + '3d4e5f', older)
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/a.ts', old_string: 'x', new_string: '<<secret:github-token:' + '0a1b2c' + '3d4e5f>>' })
+  const edit = calls.at(-1)
+  expect(edit && 'new_string' in edit ? edit.new_string : '').toBe(older)
+})
+
+test('Bash output that echoes the value, plain or base64, is stored scrubbed', async ($, on) => {
+  const { store } = await setup($, on)
+  const token = (await store(`export GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
 
   const echoed = await store(`${GH}\n${btoa(GH)}`)
   expect(echoed).not.toContain(GH)
@@ -183,6 +243,20 @@ test('a URL password that repeats the user or the scheme is a local default; an 
   ].join('\n')
   expect(await store(text)).toBe(text)
   expect(await store('redis://:' + 'Zq8Wm3Xk2Pv9' + '@cache:6379')).toMatch(/^redis:\/\/:<<secret:url-password:[0-9a-f]{12}>>@cache:6379$/)
+})
+
+test('a value with a format slot or an env reference is a template, not a secret', async ($, on) => {
+  const { store } = await setup($, on)
+  for (const line of [
+    "printf 'GITHUB_TOKEN=gh" + "p_%s\\n' \"$X\"",
+    'API_KEY="sk-%(key)s-v2"',
+    'DB_PASSWORD=pre-${DB_PASS}-post',
+    'AUTH_TOKEN=Bearer-$GITHUB_TOKEN',
+  ]) {
+    expect(await store(line)).toBe(line)
+  }
+  expect(await store('DB_PASSWORD=' + 'Pa$sword19')).toMatch(/<<secret:password:/)
+  expect(await store('DB_PASSWORD=' + 'k9%d0x7Qz')).toMatch(/<<secret:password:/)
 })
 
 test('a key on one line is never paired with the next line', async ($, on) => {
@@ -352,19 +426,19 @@ test('a row the guard cannot inspect is stored hidden, not raw', async ($, on) =
   expect(stored).toBe(HIDDEN)
 })
 
-test('a reply draws its secret paragraphs itself, the value behind a hover, the rest as markdown', async ($, on) => {
+test('a reply stays the surface\'s own markdown, each secret a link and code naming it with the links after', async ($, on) => {
   const { store, draw } = await setup($, on)
   const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
-  const text = `# 결과\n\n- 토큰은 ${ph} 입니다\n\n\`\`\`yaml\ntoken: ${ph}\n\`\`\`\n\n끝.`
+  const id = ph.match(PLACEHOLDER)?.[2] ?? ''
+  const link = `[🙈 github-token](https://secret.invalid/${id})`
+  const text = `# 결과\n\n| 이름 | 값 |\n| --- | --- |\n| 토큰 | ${ph} |\n\n\`\`\`yaml\ntoken: ${ph}\n\`\`\`\n\n\`curl -H "Bearer ${ph}"\` 로 확인합니다.\n\n끝.`
   const tree = JSON.stringify(await $.ui.render({ surface: 'desktop', component: 'AssistantMessage', requestId: 'm1', props: { text, isFirstOfReply: true } } as never))
   expect(tree).not.toContain('<<secret:')
-  expect(tree).toContain(GH)
-  expect(tree).toContain('eye-off')
-  expect(tree).toContain('.secret .v,.eye{opacity:0}')
-  expect(tree).not.toContain('filter')
-  expect(tree).toContain('• 토큰은 ')
-  expect(tree).toContain('# 결과')
-  expect(tree).toContain('끝.')
+  expect(tree).not.toContain(GH)
+  const drawnText = JSON.parse(tree).props.text as string
+  expect(drawnText).toBe(
+    `# 결과\n\n| 이름 | 값 |\n| --- | --- |\n| 토큰 | ${link} |\n\n\`\`\`yaml\ntoken: 🙈github-token\n\`\`\`\n\n[🙈 코드 블록 전체](https://secret.invalid/block-1) · ${link}\n\n\`curl -H "Bearer 🙈github-token"\` 로 확인합니다.\n\n${link}\n\n끝.`,
+  )
 
   const terminal = JSON.stringify(await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'm2', props: { text, isFirstOfReply: true } } as never))
   expect(terminal).toContain('🙈')
@@ -377,7 +451,25 @@ test('a reply draws its secret paragraphs itself, the value behind a hover, the 
 
 const SURFACES = ['desktop', 'terminal', 'vscode', 'mobile'] as const
 
-test('a reply chip copies the real value in one press, the value never in a key or the toast', async ($, on) => {
+test('a code block with secrets gets one link that copies the block with the real values', async ($, on) => {
+  const { store } = await setup($, on)
+  const copied: string[] = []
+  on('ui.copy', (_, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const text = `설정:\n\n\`\`\`bash\nexport GITHUB_TOKEN=${ph}\ngh auth status\n\`\`\``
+  const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'desktop', component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
+  const [markdown] = await ui.findAll({ type: 'Markdown' })
+  expect(JSON.stringify(markdown)).not.toContain(GH)
+  await ui.press({ key: markdown?.key ?? '', link: { href: 'https://secret.invalid/block-1' } })
+  expect(copied).toEqual([`export GITHUB_TOKEN=${GH}\ngh auth status`])
+  await ui.unmount()
+})
+
+test('a reply secret copies the real value in one press, the value never in a key, a link or the toast', async ($, on) => {
   const { store } = await setup($, on)
   const copied: string[] = []
   const toasts: string[] = []
@@ -390,16 +482,24 @@ test('a reply chip copies the real value in one press, the value never in a key 
     return { value: undefined }
   })
   const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const id = ph.match(PLACEHOLDER)?.[2] ?? ''
   const unknown = '<<secret:github-token:' + 'afe8c9' + '04c2e6>>'
   const text = `토큰은 ${ph} 이고 옛 값은 ${unknown} 입니다`
   for (const surface of SURFACES) {
     copied.length = 0
     toasts.length = 0
     const ui = await $.ui.mount({ plugin: 'secret-guard', surface, component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
-    const buttons = await ui.findAll({ type: 'Button' })
-    expect(buttons).toHaveLength(1)
-    expect(JSON.stringify(buttons)).not.toContain(GH)
-    await ui.press({ key: buttons[0]?.key ?? '' })
+    if (surface === 'terminal') {
+      const buttons = await ui.findAll({ type: 'Button' })
+      expect(buttons).toHaveLength(1)
+      expect(JSON.stringify(buttons)).not.toContain(GH)
+      await ui.press({ key: buttons[0]?.key ?? '' })
+    } else {
+      const [markdown] = await ui.findAll({ type: 'Markdown' })
+      expect(JSON.stringify(markdown)).not.toContain(GH)
+      expect(JSON.stringify(markdown)).toContain('🙈 github-token 입니다')
+      await ui.press({ key: markdown?.key ?? '', link: { href: `https://secret.invalid/${id}` } })
+    }
     expect(copied).toEqual([GH])
     expect(toasts).toHaveLength(1)
     expect(toasts[0]).toContain('github-token')
@@ -417,9 +517,10 @@ test('a copy the surface could not take says so, without the value', async ($, o
     return { value: undefined }
   })
   const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const id = ph.match(PLACEHOLDER)?.[2] ?? ''
   const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'desktop', component: 'AssistantMessage', props: { text: `토큰은 ${ph}`, isFirstOfReply: true } })
-  const [button] = await ui.findAll({ type: 'Button' })
-  await ui.press({ key: button?.key ?? '' })
+  const [markdown] = await ui.findAll({ type: 'Markdown' })
+  await ui.press({ key: markdown?.key ?? '', link: { href: `https://secret.invalid/${id}` } })
   expect(toasts).toEqual(['복사하지 못했습니다: 이 화면에서는 클립보드를 쓸 수 없습니다'])
   await ui.unmount()
 })

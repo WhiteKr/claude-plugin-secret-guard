@@ -1,6 +1,6 @@
 {
   "name": "secret-guard",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "코드와 대화 속 키·토큰을 모델이 읽기 전에 <<secret:…>> 자리표시자로 가리고, 도구가 실행될 때만 실제 값으로 되돌려 .env 이동·설정 적용·CI 시크릿 등록을 맡길 수 있게 하는 가드",
   "author": {
     "name": "WhiteKr",
