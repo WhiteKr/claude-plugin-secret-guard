@@ -61,9 +61,15 @@ ${isSecret ? smear : ''}
 
 const COPY = '📋'
 
+const COPY_FAILED = {
+  'no-surface': '복사할 화면이 연결되어 있지 않습니다',
+  'no-clipboard': '이 화면에서는 클립보드를 쓸 수 없습니다',
+  refused: '복사가 거부되었습니다',
+} as const
+
 async function copy($: EngineInterface, secret: { label: string; value: string }, surface: RenderSurface) {
   const copied = await $.ui.copy({ text: secret.value, surface })
-  $.ui.toast(copied.isCopied ? `${secret.label} 값을 클립보드에 복사했습니다` : `복사하지 못했습니다: ${copied.reason}`)
+  $.ui.toast(copied.isCopied ? `${secret.label} 값을 클립보드에 복사했습니다` : `복사하지 못했습니다: ${COPY_FAILED[copied.reason]}`)
 }
 
 /** A message whose paragraphs holding a secret this mod draws, so a hover can reveal the value. */

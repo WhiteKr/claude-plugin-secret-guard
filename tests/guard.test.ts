@@ -420,7 +420,7 @@ test('a copy the surface could not take says so, without the value', async ($, o
   const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'desktop', component: 'AssistantMessage', props: { text: `토큰은 ${ph}`, isFirstOfReply: true } })
   const [button] = await ui.findAll({ type: 'Button' })
   await ui.press({ key: button?.key ?? '' })
-  expect(toasts).toEqual(['복사하지 못했습니다: no-clipboard'])
+  expect(toasts).toEqual(['복사하지 못했습니다: 이 화면에서는 클립보드를 쓸 수 없습니다'])
   await ui.unmount()
 })
 
