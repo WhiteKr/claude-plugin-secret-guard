@@ -115,7 +115,7 @@ const unknownPlaceholder = (whole: string) =>
   `secret-guard: ${whole} 의 값을 이 세션에서 알 수 없습니다. 원본 파일을 다시 Read 하거나 사용자에게 /secret 으로 등록을 요청하세요.`
 
 const refusedTool = (tool: string) =>
-  `secret-guard: ${tool} 에는 비밀 값을 넘기지 않습니다. 파일에 쓰거나 로컬 명령을 실행하는 도구(Edit, Write, Bash)에만 자리표시자를 쓸 수 있습니다.`
+  `secret-guard: ${tool} 에는 비밀 값을 넘기지 않습니다. 로컬 파일을 다루거나 명령을 실행하는 도구(${[...SUBSTITUTES].join(', ')})에만 자리표시자를 쓸 수 있습니다.`
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -264,9 +264,9 @@ export const register: Register = on => {
 
   on('command.run', { command: 'secret' }, async ($, e) => {
     if (!IS_PLACEHOLDER.test(e.args)) {
-      return { text: `등록되지 않았습니다. 사용법: /secret <값> (${MIN_KNOWN}자 이상), 실패했다면 다시 시도하세요.` }
+      return { text: `등록하지 않았습니다. 사용법은 /secret <값>이고, 값은 ${MIN_KNOWN}자 이상이어야 합니다.` }
     }
     await $.prompt.fill({ text: e.args + ' ', mode: 'insert' })
-    return { text: `${e.args} 로 등록됨` }
+    return { text: `\`${e.args}\` 로 등록됨` }
   })
 }

@@ -15,9 +15,20 @@ type Span = { start: number; end: number; kind: string; value: string; priority:
 
 const KNOWN = -1
 
-const NAME = String.raw`[\w.-]{0,40}(?:secret|token|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth(?!or)|credential)[\w.-]{0,40}`
+const NAME = String.raw`[\w.-]{0,40}(?:secret|token|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|client[_-]?secret|auth(?!or)|credential)[\w.-]{0,40}`
 
 const FILE_EXT = String.raw`\.(?:ya?ml|json|toml|env|ini|cfg|conf|properties|xml|html?|md|txt|sh|[cm]?[jt]sx?|py|rb|go|rs|java|kt|php|cs|swift)`
+
+// Either side may be empty (an API key sent as the user or as the password) and may be any UTF-8 text.
+const isUserPassword = (value: string) => {
+  try {
+    const bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0))
+    // Bytes that are not UTF-8 decode to U+FFFD.
+    return /^[^\x00-\x1f\x7f:\ufffd]*:[^\x00-\x1f\x7f\ufffd]*$/.test(new TextDecoder().decode(bytes))
+  } catch {
+    return false
+  }
+}
 
 // Ordered by priority: when two spans start at the same place and are as long, the earlier rule names the kind.
 const RULES: readonly Rule[] = [
@@ -33,8 +44,19 @@ const RULES: readonly Rule[] = [
   { kind: 'google-key', pattern: /\bAIza[0-9A-Za-z_-]{35}/dg },
   { kind: 'stripe-key', pattern: /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/dg },
   { kind: 'npm-token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/dg },
+  { kind: 'google-client-secret', pattern: /\bGOCSPX-[A-Za-z0-9_-]{28}(?![\w-])/dg },
+  { kind: 'huggingface-token', pattern: /\bhf_[A-Za-z0-9]{30,}\b/dg, isDummy: value => !/\d/.test(value) },
+  { kind: 'sendgrid-key', pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/dg },
+  { kind: 'digitalocean-token', pattern: /\bdo[opr]_v1_[0-9a-f]{64}\b/dg },
+  // A bot URL glues the token to `bot` (`/bot123456789:AA…/getMe`).
+  { kind: 'telegram-token', pattern: /(?<!\d)\d{8,10}:AA[A-Za-z0-9_-]{33}(?![\w-])/dg },
+  // A webhook URL is its own credential; the host and ids stay readable.
+  { kind: 'webhook-token', pattern: /\bhttps:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/([A-Za-z0-9_-]{60,})/dg, groups: [1] },
+  { kind: 'webhook-token', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/([A-Za-z0-9]{20,})/dg, groups: [1] },
   { kind: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/dg },
-  { kind: 'bearer-token', pattern: /\bBearer\s+([A-Za-z0-9._~+/=-]{16,})/dg, groups: [1] },
+  { kind: 'bearer-token', pattern: /\bBearer(?:\s|[·→])+([A-Za-z0-9._~+/=-]{16,})/dg, groups: [1] },
+  // Base64 words follow `Basic` in prose too (`Basic usage`); credentials decode to `user:password`.
+  { kind: 'basic-auth', pattern: /\bBasic(?:\s|[·→])+([A-Za-z0-9+/]{12,}={0,2})(?![\w+/=])/dg, groups: [1], isDummy: value => !isUserPassword(value) },
   // Values are printable ASCII: Read output marks line ends and spaces with
   // glyphs such as U+240A and U+00B7, which must not join the value.
   // A password that repeats the user or the scheme (`postgres:postgres@`,
@@ -158,6 +180,7 @@ const KEY_REFERENCE = /(?:name|ref|path|file|url|uri|endpoint|header|id)$/i
 
 // URLs and filesystem paths.
 const LOCATION = /^(?:[a-z][a-z0-9+.-]*:\/\/|[~.]?\/)/i
+const BASE64_KEY = /^[A-Za-z0-9+/]{20,}={1,2}$/
 
 // Code in a bare value: a type (`string):`, `string[]`, `Record<string`), an
 // index or call, a negation. Such a password would need quoting in a shell.
@@ -171,7 +194,8 @@ const isExempt = (value: string, rule: Rule, m: RegExpMatchArray, isQuoted: bool
   if (!rule.isAssignment) return DIGEST.some(re => re.test(value))
   const key = m[1] ?? ''
   if (DIGEST.some(re => re.test(value))) return DIGEST_KEY.test(key)
-  if (KEY_REFERENCE.test(key) || LOCATION.test(value)) return true
+  // A long base64 run with padding is a key (`AccountKey=/…==`), not a path.
+  if (KEY_REFERENCE.test(key) || (LOCATION.test(value) && !BASE64_KEY.test(value))) return true
   const hasDigit = /\d/.test(value)
   // A leading capital is a word's (`Required`), not a mixed-case secret's.
   const isMixed = /[a-z]/.test(value) && /[A-Z]/.test(value.slice(1))

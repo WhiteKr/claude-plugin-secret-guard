@@ -39,7 +39,7 @@ async function setup($: Engine, on: On) {
   const drawn: Record<string, Record<string, unknown>> = {}
   on('ui.render', (_, e) => {
     drawn[e.component] = e.props as Record<string, unknown>
-    return { type: 'engine', ref: 'bottom' } as never
+    return { type: 'engine', ref: 0 } as never
   })
   const store = async (text: string) => {
     await $.session.append(toolResult(text))
@@ -315,7 +315,8 @@ test('/secret registers a value, fills the prompt, and scrubs it from later rows
   })
   const token = r.text?.match(PLACEHOLDER)?.[0]
   expect(token).toMatch(/^<<secret:user:[0-9a-f]{12}>>$/)
-  expect(r.text).toBe(`${token} 로 등록됨`)
+  // In inline code: markdown reads a bare `<secret:…>` as an autolink and drops a bracket of each pair.
+  expect(r.text).toBe(`\`${token}\` 로 등록됨`)
   expect(filled).toEqual([`${token} `])
 
   expect(await store(`the wifi password is ${value}.`)).toBe(`the wifi password is ${token}.`)
@@ -393,8 +394,8 @@ test('a prompt with a secret tells the model beside it, never in the text the pe
     submitted.push({ text: e.text, context: e.context })
     return { text: e.text, context: e.context }
   })
-  await $.prompt.submit({ text: `token ${GH}` })
-  await $.prompt.submit({ text: 'hello there' })
+  await $.prompt.submit({ text: `token ${GH}`, wait: false, origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: 'hello there', wait: false, origin: { kind: 'composer' } })
   expect(submitted[0]?.context?.join('\n')).toContain('[secret-guard] Values shaped')
   expect(submitted[1]?.context ?? []).toEqual([])
   await $.session.append({
@@ -449,6 +450,48 @@ test('hex and uuid secrets, and passwords with shell or quote characters, are re
   const sha = 'cd34'.repeat(10)
   expect(await store(`commit_sha: ${sha}`)).toBe(`commit_sha: ${sha}`)
   expect(await store('API_KEY=sk-xxxxxxxxxxxxxxxx')).toBe('API_KEY=sk-xxxxxxxxxxxxxxxx')
+})
+
+test('service tokens, webhook URLs, Basic credentials and Azure account keys are redacted', async ($, on) => {
+  const { store } = await setup($, on)
+  const run = (n: number) => 'Ab1cD2eF3gH4'.repeat(8).slice(0, n)
+  const basic = btoa('admin:' + 'S3cret' + 'Pass99')
+  const cases = [
+    ['huggingface-cli login ' + 'hf' + '_' + run(34), 'hf' + '_' + run(34)],
+    ['key ' + 'SG' + '.' + run(22) + '.' + run(43), 'SG' + '.' + run(22) + '.' + run(43)],
+    ['bot ' + '123456789:' + 'AA' + run(33), '123456789:' + 'AA' + run(33)],
+    ['oauth client ' + 'GOCSPX' + '-' + run(28), 'GOCSPX' + '-' + run(28)],
+    ['doctl auth init -t ' + 'dop' + '_v1_' + 'ab12'.repeat(16), 'dop' + '_v1_' + 'ab12'.repeat(16)],
+    ['https://discord.com/api/webhooks/123456789012345678/' + run(68), run(68)],
+    ['https://hooks.slack.com/services/T0ABCDEFG/B0ABCDEFG/' + run(24), run(24)],
+    ['Authorization: Basic ' + basic, basic],
+    ['AccountName=foo;AccountKey=' + run(86) + '==;EndpointSuffix=core.windows.net', run(86) + '=='],
+    ['https://api.telegram.org/bot' + '123456789:' + 'AA' + run(33) + '/getMe', '123456789:' + 'AA' + run(33)],
+    ['TELEGRAM_BOT_TOKEN=' + '123456789:' + 'AA' + run(32) + '-', '123456789:' + 'AA' + run(32) + '-'],
+    ['oauth client ' + 'GOCSPX' + '-' + run(27) + '-', 'GOCSPX' + '-' + run(27) + '-'],
+    ['AccountName=foo;AccountKey=/' + run(85) + '==;EndpointSuffix=core.windows.net', '/' + run(85) + '=='],
+    ['Authorization: Basic ' + btoa('sk' + '_live_' + run(24) + ':'), btoa('sk' + '_live_' + run(24) + ':')],
+    ['Authorization: Basic ' + 'YWRtaW4667mE67CA67KI7Zi4MTIzNA==', 'YWRtaW4667mE67CA67KI7Zi4MTIzNA=='],
+    ['https://discord.com/api/v10/webhooks/123456789012345678/' + run(68), run(68)],
+    ['git -c http.extraHeader="Authorization: Basic ' + btoa(':' + run(52)) + '"', btoa(':' + run(52))],
+    ['Authorization:·Basic·' + basic + '␊', basic],
+    ['Authorization:·Bearer·' + run(40) + '␊', run(40)],
+  ] as const
+  for (const [line, value] of cases) {
+    const stored = await store(line)
+    expect(stored).not.toContain(value)
+    expect(stored).toMatch(PLACEHOLDER)
+  }
+  const plain = [
+    'from huggingface_hub import hf_hub_download',
+    'Basic usage: run the tool',
+    'Authorization: Basic ' + btoa('no colon in this one'),
+    'see https://hooks.slack.com/services for setup',
+    'account_key_id: 42',
+    'AUTH_CALLBACK=https://example.com/oauth/callback?next=',
+    'SECRET_DIR=./secrets/base=',
+  ].join('\n')
+  expect(await store(plain)).toBe(plain)
 })
 
 test('two first rows at once share one salt, so one value keeps one placeholder', async ($, on) => {

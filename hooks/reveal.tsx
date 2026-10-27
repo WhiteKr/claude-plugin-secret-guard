@@ -30,9 +30,13 @@ const FILLER = 'k7Rx2QmZp9Lw4VbN8tYc3HsJ6dGf5aEu'
 const filler = (length: number) => FILLER.repeat(Math.ceil(length / FILLER.length)).slice(0, length)
 
 export function pillSvg(text: string, isSecret: boolean): { source: string; width: number } {
-  const width = Math.ceil(28 + text.length * CHAR_WIDTH + 10)
+  const span = text.length * CHAR_WIDTH
+  const width = Math.ceil(28 + span + 10)
+  // Fonts differ by surface (Menlo on a Mac, DejaVu or Ubuntu Mono on Linux); the text is spread to the chip it was measured for.
+  // Wide glyphs (Hangul, emoji) and spaces SVG collapses would be squeezed or stretched, so only one-cell text is fitted.
+  const fit = /^[!-~]+$/.test(text) ? `textLength="${span.toFixed(1)}" lengthAdjust="spacing"` : ''
   const font = 'font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace'
-  const smear = SMEAR.map(([dx, dy]) => `<text class="smear" x="${28 + dx}" y="${14 + dy}">${filler(text.length)}</text>`).join('')
+  const smear = SMEAR.map(([dx, dy]) => `<text class="smear" x="${28 + dx}" y="${14 + dy}" ${fit}>${filler(text.length)}</text>`).join('')
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${HEIGHT}" viewBox="0 0 ${width} ${HEIGHT}">
 <style>
 .chip{fill:rgba(143,138,131,.12);stroke:rgba(143,138,131,.32);stroke-width:.75;transition:all .12s}
@@ -49,7 +53,7 @@ svg:hover .secret .eye{opacity:1;stroke:${CLAY}}
 <rect class="chip" x="0.5" y="0.5" rx="6" width="${width - 1}" height="${HEIGHT - 1}"/>
 <g transform="translate(8 3) scale(.583)"><g class="icon eye-off">${EYE_OFF}</g><g class="icon eye">${EYE}</g></g>
 ${isSecret ? smear : ''}
-<text class="v" x="28" y="14">${escapeXml(text)}</text>
+<text class="v" x="28" y="14" ${fit}>${escapeXml(text)}</text>
 </g>
 </svg>`
   return { source, width }
