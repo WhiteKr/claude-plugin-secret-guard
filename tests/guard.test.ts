@@ -465,6 +465,13 @@ test('service tokens, webhook URLs, Basic credentials and Azure account keys are
     ['https://hooks.slack.com/services/T0ABCDEFG/B0ABCDEFG/' + run(24), run(24)],
     ['Authorization: Basic ' + basic, basic],
     ['AccountName=foo;AccountKey=' + run(86) + '==;EndpointSuffix=core.windows.net', run(86) + '=='],
+    ['https://api.telegram.org/bot' + '123456789:' + 'AA' + run(33) + '/getMe', '123456789:' + 'AA' + run(33)],
+    ['TELEGRAM_BOT_TOKEN=' + '123456789:' + 'AA' + run(32) + '-', '123456789:' + 'AA' + run(32) + '-'],
+    ['oauth client ' + 'GOCSPX' + '-' + run(27) + '-', 'GOCSPX' + '-' + run(27) + '-'],
+    ['AccountName=foo;AccountKey=/' + run(85) + '==;EndpointSuffix=core.windows.net', '/' + run(85) + '=='],
+    ['Authorization: Basic ' + btoa('sk' + '_live_' + run(24) + ':'), btoa('sk' + '_live_' + run(24) + ':')],
+    ['Authorization: Basic ' + 'YWRtaW4667mE67CA67KI7Zi4MTIzNA==', 'YWRtaW4667mE67CA67KI7Zi4MTIzNA=='],
+    ['https://discord.com/api/v10/webhooks/123456789012345678/' + run(68), run(68)],
   ] as const
   for (const [line, value] of cases) {
     const stored = await store(line)
