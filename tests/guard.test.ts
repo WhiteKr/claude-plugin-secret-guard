@@ -451,6 +451,36 @@ test('hex and uuid secrets, and passwords with shell or quote characters, are re
   expect(await store('API_KEY=sk-xxxxxxxxxxxxxxxx')).toBe('API_KEY=sk-xxxxxxxxxxxxxxxx')
 })
 
+test('service tokens, webhook URLs, Basic credentials and Azure account keys are redacted', async ($, on) => {
+  const { store } = await setup($, on)
+  const run = (n: number) => 'Ab1cD2eF3gH4'.repeat(8).slice(0, n)
+  const basic = btoa('admin:' + 'S3cret' + 'Pass99')
+  const cases = [
+    ['huggingface-cli login ' + 'hf' + '_' + run(34), 'hf' + '_' + run(34)],
+    ['key ' + 'SG' + '.' + run(22) + '.' + run(43), 'SG' + '.' + run(22) + '.' + run(43)],
+    ['bot ' + '123456789:' + 'AA' + run(33), '123456789:' + 'AA' + run(33)],
+    ['oauth client ' + 'GOCSPX' + '-' + run(28), 'GOCSPX' + '-' + run(28)],
+    ['doctl auth init -t ' + 'dop' + '_v1_' + 'ab12'.repeat(16), 'dop' + '_v1_' + 'ab12'.repeat(16)],
+    ['https://discord.com/api/webhooks/123456789012345678/' + run(68), run(68)],
+    ['https://hooks.slack.com/services/T0ABCDEFG/B0ABCDEFG/' + run(24), run(24)],
+    ['Authorization: Basic ' + basic, basic],
+    ['AccountName=foo;AccountKey=' + run(86) + '==;EndpointSuffix=core.windows.net', run(86) + '=='],
+  ] as const
+  for (const [line, value] of cases) {
+    const stored = await store(line)
+    expect(stored).not.toContain(value)
+    expect(stored).toMatch(PLACEHOLDER)
+  }
+  const plain = [
+    'from huggingface_hub import hf_hub_download',
+    'Basic usage: run the tool',
+    'Authorization: Basic ' + btoa('no colon in this one'),
+    'see https://hooks.slack.com/services for setup',
+    'account_key_id: 42',
+  ].join('\n')
+  expect(await store(plain)).toBe(plain)
+})
+
 test('two first rows at once share one salt, so one value keeps one placeholder', async ($, on) => {
   const session = mock.session(on)
   mock.store(on)
