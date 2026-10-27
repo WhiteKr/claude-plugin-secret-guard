@@ -1,4 +1,4 @@
-import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
+import type { EngineInterface, RenderElement, RenderInput, RenderSurface } from 'claude-code'
 
 import { ICON as HIDDEN, ICON_SHOWN as SHOWN } from './display'
 import type { Part, Piece } from './display'
@@ -59,6 +59,19 @@ ${isSecret ? smear : ''}
   return { source, width }
 }
 
+const COPY = '📋'
+
+const COPY_FAILED = {
+  'no-surface': '복사할 화면이 연결되어 있지 않습니다',
+  'no-clipboard': '이 화면에서는 클립보드를 쓸 수 없습니다',
+  refused: '복사가 거부되었습니다',
+} as const
+
+async function copy($: EngineInterface, secret: { label: string; value: string }, surface: RenderSurface) {
+  const copied = await $.ui.copy({ text: secret.value, surface })
+  $.ui.toast(copied.isCopied ? `${secret.label} 값을 클립보드에 복사했습니다` : `복사하지 못했습니다: ${COPY_FAILED[copied.reason]}`)
+}
+
 /** A message whose paragraphs holding a secret this mod draws, so a hover can reveal the value. */
 export function drawMessage(
   $: EngineInterface,
@@ -66,25 +79,40 @@ export function drawMessage(
   parts: Part[],
 ): RenderElement {
   const table = $.ui.resolve(e)
-  const { Box, Text, Markdown } = table
+  const { Box, Text, Markdown, Button } = table
   // The terminal's table answers `Svg` with an element that draws nothing.
   const Svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
   let chips = 0
 
   const chip = (secret: { label: string; value?: string }) => {
-    const key = `secret-guard-${e.requestId}-${chips++}`
+    const n = chips++
+    const key = `secret-guard-${e.requestId}-${n}`
+    const { label, value } = secret
+    // The key and label are what a surface shows or reports, so they never hold the value.
+    const copyButton =
+      value === undefined ? null : (
+        <Button
+          key={`secret-guard-copy-${e.requestId}-${n}`}
+          label={COPY}
+          plain
+          dimColor
+          hover={{ dimColor: false }}
+          onPress={press => void copy($, { label, value }, press.surface)}
+        />
+      )
     if (Svg) {
-      const pill = pillSvg(secret.value ?? secret.label, secret.value !== undefined)
+      const pill = pillSvg(value ?? label, value !== undefined)
       return (
-        <Box key={key} flexGrow={0} flexShrink={0}>
-          <Svg source={pill.source} alt={`${HIDDEN} ${secret.label}`} width={pill.width} height={HEIGHT} isInteractive />
+        <Box key={key} flexDirection="row" flexGrow={0} flexShrink={0}>
+          <Svg source={pill.source} alt={`${HIDDEN} ${label}`} width={pill.width} height={HEIGHT} isInteractive />
+          {copyButton}
         </Box>
       )
     }
-    if (secret.value === undefined) {
+    if (value === undefined) {
       return (
         <Box key={key} flexGrow={0} flexShrink={0}>
-          <Text dimColor>{`${HIDDEN} ${secret.label}`}</Text>
+          <Text dimColor>{`${HIDDEN} ${label}`}</Text>
         </Box>
       )
     }
@@ -93,11 +121,12 @@ export function drawMessage(
       <Box key={key} position="relative" flexDirection="row" flexGrow={0} flexShrink={0}>
         <Text>{`${HIDDEN} `}</Text>
         <Text color={BAR} backgroundColor={BAR} hover={{ color: 'text', backgroundColor: 'transparent' }}>
-          {secret.value}
+          {value}
         </Text>
         <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }} backgroundColor={BAR}>
           <Text>{SHOWN}</Text>
         </Box>
+        {copyButton}
       </Box>
     )
   }

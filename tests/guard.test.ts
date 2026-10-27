@@ -375,6 +375,55 @@ test('a reply draws its secret paragraphs itself, the value behind a hover, the 
   expect(plain.text).toBe('비밀 없음')
 })
 
+const SURFACES = ['desktop', 'terminal', 'vscode', 'mobile'] as const
+
+test('a reply chip copies the real value in one press, the value never in a key or the toast', async ($, on) => {
+  const { store } = await setup($, on)
+  const copied: string[] = []
+  const toasts: string[] = []
+  on('ui.copy', (_, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const unknown = '<<secret:github-token:' + 'afe8c9' + '04c2e6>>'
+  const text = `토큰은 ${ph} 이고 옛 값은 ${unknown} 입니다`
+  for (const surface of SURFACES) {
+    copied.length = 0
+    toasts.length = 0
+    const ui = await $.ui.mount({ plugin: 'secret-guard', surface, component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
+    const buttons = await ui.findAll({ type: 'Button' })
+    expect(buttons).toHaveLength(1)
+    expect(JSON.stringify(buttons)).not.toContain(GH)
+    await ui.press({ key: buttons[0]?.key ?? '' })
+    expect(copied).toEqual([GH])
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]).toContain('github-token')
+    expect(toasts[0]).not.toContain(GH)
+    await ui.unmount()
+  }
+})
+
+test('a copy the surface could not take says so, without the value', async ($, on) => {
+  const { store } = await setup($, on)
+  const toasts: string[] = []
+  on('ui.copy', () => ({ value: { isCopied: false, reason: 'no-clipboard' } }))
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'desktop', component: 'AssistantMessage', props: { text: `토큰은 ${ph}`, isFirstOfReply: true } })
+  const [button] = await ui.findAll({ type: 'Button' })
+  await ui.press({ key: button?.key ?? '' })
+  expect(toasts).toEqual(['복사하지 못했습니다: 이 화면에서는 클립보드를 쓸 수 없습니다'])
+  await ui.unmount()
+})
+
 test('a user row keeps its own drawing, the value marked and never the note; a pasted placeholder stays as typed', async ($, on) => {
   const { store, draw } = await setup($, on)
   const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
