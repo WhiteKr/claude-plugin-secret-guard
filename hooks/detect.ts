@@ -19,12 +19,12 @@ const NAME = String.raw`[\w.-]{0,40}(?:secret|token|passw(?:or)?d|pwd|api[_-]?ke
 
 const FILE_EXT = String.raw`\.(?:ya?ml|json|toml|env|ini|cfg|conf|properties|xml|html?|md|txt|sh|[cm]?[jt]sx?|py|rb|go|rs|java|kt|php|cs|swift)`
 
-// The password may be empty (an API key sent as the user) and may be any UTF-8 text.
+// Either side may be empty (an API key sent as the user or as the password) and may be any UTF-8 text.
 const isUserPassword = (value: string) => {
   try {
     const bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0))
     // Bytes that are not UTF-8 decode to U+FFFD.
-    return /^[^\x00-\x1f\x7f:\ufffd]+:[^\x00-\x1f\x7f\ufffd]*$/.test(new TextDecoder().decode(bytes))
+    return /^[^\x00-\x1f\x7f:\ufffd]*:[^\x00-\x1f\x7f\ufffd]*$/.test(new TextDecoder().decode(bytes))
   } catch {
     return false
   }
@@ -54,9 +54,9 @@ const RULES: readonly Rule[] = [
   { kind: 'webhook-token', pattern: /\bhttps:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/([A-Za-z0-9_-]{60,})/dg, groups: [1] },
   { kind: 'webhook-token', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/([A-Za-z0-9]{20,})/dg, groups: [1] },
   { kind: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/dg },
-  { kind: 'bearer-token', pattern: /\bBearer\s+([A-Za-z0-9._~+/=-]{16,})/dg, groups: [1] },
+  { kind: 'bearer-token', pattern: /\bBearer(?:\s|[·→])+([A-Za-z0-9._~+/=-]{16,})/dg, groups: [1] },
   // Base64 words follow `Basic` in prose too (`Basic usage`); credentials decode to `user:password`.
-  { kind: 'basic-auth', pattern: /\bBasic\s+([A-Za-z0-9+/]{12,}={0,2})(?![\w+/=])/dg, groups: [1], isDummy: value => !isUserPassword(value) },
+  { kind: 'basic-auth', pattern: /\bBasic(?:\s|[·→])+([A-Za-z0-9+/]{12,}={0,2})(?![\w+/=])/dg, groups: [1], isDummy: value => !isUserPassword(value) },
   // Values are printable ASCII: Read output marks line ends and spaces with
   // glyphs such as U+240A and U+00B7, which must not join the value.
   // A password that repeats the user or the scheme (`postgres:postgres@`,
@@ -180,6 +180,7 @@ const KEY_REFERENCE = /(?:name|ref|path|file|url|uri|endpoint|header|id)$/i
 
 // URLs and filesystem paths.
 const LOCATION = /^(?:[a-z][a-z0-9+.-]*:\/\/|[~.]?\/)/i
+const BASE64_KEY = /^[A-Za-z0-9+/]{20,}={1,2}$/
 
 // Code in a bare value: a type (`string):`, `string[]`, `Record<string`), an
 // index or call, a negation. Such a password would need quoting in a shell.
@@ -193,8 +194,8 @@ const isExempt = (value: string, rule: Rule, m: RegExpMatchArray, isQuoted: bool
   if (!rule.isAssignment) return DIGEST.some(re => re.test(value))
   const key = m[1] ?? ''
   if (DIGEST.some(re => re.test(value))) return DIGEST_KEY.test(key)
-  // Base64 padding ends a key (`AccountKey=/…==`), never a path.
-  if (KEY_REFERENCE.test(key) || (LOCATION.test(value) && !value.endsWith('='))) return true
+  // A long base64 run with padding is a key (`AccountKey=/…==`), not a path.
+  if (KEY_REFERENCE.test(key) || (LOCATION.test(value) && !BASE64_KEY.test(value))) return true
   const hasDigit = /\d/.test(value)
   // A leading capital is a word's (`Required`), not a mixed-case secret's.
   const isMixed = /[a-z]/.test(value) && /[A-Z]/.test(value.slice(1))

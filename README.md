@@ -47,7 +47,7 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 
 - PEM 개인 키 블록
 - GitHub, Anthropic, OpenAI, AWS, Slack, GitLab, Google, Stripe, npm, Hugging Face, SendGrid, DigitalOcean, Telegram 봇 토큰과 Google OAuth 클라이언트 시크릿(`GOCSPX-`)
-- JWT, `Bearer` 토큰, `user:password`로 풀리는 `Basic` 인증 값
+- JWT, `Bearer` 토큰, `user:password`로 풀리는 `Basic` 인증 값. 사용자 이름이나 비밀번호 한쪽이 비어 있어도 가립니다.
 - Discord와 Slack 웹훅 URL의 토큰 부분. 호스트와 ID는 그대로 보입니다.
 - URL 속 비밀번호 (`postgres://user:비밀번호@host`)
 - 이름에 secret, token, password, api_key, access_key, account_key, auth, credential 등이 들어간 대입문의 값 (.env, YAML, JSON, `export`, Azure 연결 문자열의 `AccountKey=`)
