@@ -1,5 +1,5 @@
 import type { SecretGuardVault } from '../types'
-import { MIN_KNOWN, PLACEHOLDER, placeholder } from './detect'
+import { MIN_KNOWN, PLACEHOLDER, placeholder, substitute } from './detect'
 
 // What the person sees where the model sees a placeholder. Drawing only: the
 // stored rows the model reads keep the placeholder.
@@ -116,6 +116,8 @@ export function layout(text: string, vault: SecretGuardVault): Part[] | undefine
 // that opens the link instead of reporting the press goes nowhere.
 export const LINK_BASE = 'https://secret.invalid/'
 
+const BLOCK_LABEL = '코드 블록 전체'
+
 /** A reply as markdown the surface draws whole, each secret a link whose press copies it. */
 export type Linked = { text: string; links: Record<string, { label: string; value: string }> }
 
@@ -123,7 +125,9 @@ export type Linked = { text: string; links: Record<string, { label: string; valu
  * Turns each placeholder into a link the surface draws in place, so the
  * reply keeps its own headings, tables and code. Code draws no links: a
  * placeholder there shows its name, and a line after the code block or the
- * paragraph holds the links for those. Undefined when the reply holds none.
+ * paragraph holds the links for those. A code block whose secrets are all
+ * known also gets a link that copies the whole block with the real values.
+ * Undefined when the reply holds none.
  */
 export function linked(text: string, vault: SecretGuardVault): Linked | undefined {
   if (!HAS_PLACEHOLDER.test(text)) return undefined
@@ -131,24 +135,38 @@ export function linked(text: string, vault: SecretGuardVault): Linked | undefine
   const out: string[] = []
   let pending = new Map<string, string>()
   let isFence = false
+  let block: string[] = []
   const link = (label: string, id: string) => {
     const value = vault[id]?.value
     if (value === undefined) return `${ICON} ${label}`
     links[LINK_BASE + id] = { label, value }
     return `[${ICON} ${label}](${LINK_BASE}${id})`
   }
-  const flush = () => {
+  const flush = (whole?: string) => {
     if (pending.size === 0) return
-    out.push('', [...pending].map(([id, label]) => link(label, id)).join(' · '))
+    const each = [...pending].map(([id, label]) => link(label, id))
+    out.push('', [...(whole ? [whole] : []), ...each].join(' · '))
     pending = new Map()
+  }
+  // The block's link is keyed by its order, so its target never holds the block's text.
+  const blockLink = () => {
+    const raw = block.join('\n')
+    if (!HAS_PLACEHOLDER.test(raw)) return undefined
+    const r = substitute(raw, vault)
+    if (r.missing.length > 0) return undefined
+    const href = `${LINK_BASE}block-${Object.keys(links).filter(k => k.includes('/block-')).length + 1}`
+    links[href] = { label: BLOCK_LABEL, value: r.text }
+    return `[${ICON} ${BLOCK_LABEL}](${href})`
   }
   for (const line of text.split('\n')) {
     if (FENCE.test(line)) {
       out.push(line)
-      if (isFence) flush()
+      if (isFence) flush(blockLink())
       isFence = !isFence
+      block = []
       continue
     }
+    if (isFence) block.push(line)
     if (!isFence && line.trim() === '') flush()
     out.push(
       line.replace(SHOWN, (whole, ...m) => {

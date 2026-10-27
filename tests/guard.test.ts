@@ -118,7 +118,7 @@ test('Bash reads the real value from a private file, never from its command line
   const id = token.match(PLACEHOLDER)?.[2] ?? ''
   await $.tool.call({ tool: 'Bash', command: `gh secret set GH_TOKEN --body ${token} && echo '${token}' "x ${token}"` })
   const bash = calls.at(-1)
-  const command = bash && 'command' in bash ? bash.command : ''
+  const command = String(bash && 'command' in bash ? bash.command : '')
   expect(command).not.toContain(GH)
   const read = command.match(/\$\(cat '([^']+)'\)/)?.[1] ?? ''
   expect(read).toMatch(new RegExp(`/secret-guard-[0-9a-f]{16}/${id}$`))
@@ -243,6 +243,20 @@ test('a URL password that repeats the user or the scheme is a local default; an 
   ].join('\n')
   expect(await store(text)).toBe(text)
   expect(await store('redis://:' + 'Zq8Wm3Xk2Pv9' + '@cache:6379')).toMatch(/^redis:\/\/:<<secret:url-password:[0-9a-f]{12}>>@cache:6379$/)
+})
+
+test('a value with a format slot or an env reference is a template, not a secret', async ($, on) => {
+  const { store } = await setup($, on)
+  for (const line of [
+    "printf 'GITHUB_TOKEN=gh" + "p_%s\\n' \"$X\"",
+    'API_KEY="sk-%(key)s-v2"',
+    'DB_PASSWORD=pre-${DB_PASS}-post',
+    'AUTH_TOKEN=Bearer-$GITHUB_TOKEN',
+  ]) {
+    expect(await store(line)).toBe(line)
+  }
+  expect(await store('DB_PASSWORD=' + 'Pa$sword19')).toMatch(/<<secret:password:/)
+  expect(await store('DB_PASSWORD=' + 'k9%d0x7Qz')).toMatch(/<<secret:password:/)
 })
 
 test('a key on one line is never paired with the next line', async ($, on) => {
@@ -423,7 +437,7 @@ test('a reply stays the surface\'s own markdown, each secret a link and code nam
   expect(tree).not.toContain(GH)
   const drawnText = JSON.parse(tree).props.text as string
   expect(drawnText).toBe(
-    `# 결과\n\n| 이름 | 값 |\n| --- | --- |\n| 토큰 | ${link} |\n\n\`\`\`yaml\ntoken: 🙈github-token\n\`\`\`\n\n${link}\n\n\`curl -H "Bearer 🙈github-token"\` 로 확인합니다.\n\n${link}\n\n끝.`,
+    `# 결과\n\n| 이름 | 값 |\n| --- | --- |\n| 토큰 | ${link} |\n\n\`\`\`yaml\ntoken: 🙈github-token\n\`\`\`\n\n[🙈 코드 블록 전체](https://secret.invalid/block-1) · ${link}\n\n\`curl -H "Bearer 🙈github-token"\` 로 확인합니다.\n\n${link}\n\n끝.`,
   )
 
   const terminal = JSON.stringify(await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'm2', props: { text, isFirstOfReply: true } } as never))
@@ -436,6 +450,24 @@ test('a reply stays the surface\'s own markdown, each secret a link and code nam
 })
 
 const SURFACES = ['desktop', 'terminal', 'vscode', 'mobile'] as const
+
+test('a code block with secrets gets one link that copies the block with the real values', async ($, on) => {
+  const { store } = await setup($, on)
+  const copied: string[] = []
+  on('ui.copy', (_, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
+  const text = `설정:\n\n\`\`\`bash\nexport GITHUB_TOKEN=${ph}\ngh auth status\n\`\`\``
+  const ui = await $.ui.mount({ plugin: 'secret-guard', surface: 'desktop', component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
+  const [markdown] = await ui.findAll({ type: 'Markdown' })
+  expect(JSON.stringify(markdown)).not.toContain(GH)
+  await ui.press({ key: markdown?.key ?? '', link: { href: 'https://secret.invalid/block-1' } })
+  expect(copied).toEqual([`export GITHUB_TOKEN=${GH}\ngh auth status`])
+  await ui.unmount()
+})
 
 test('a reply secret copies the real value in one press, the value never in a key, a link or the toast', async ($, on) => {
   const { store } = await setup($, on)

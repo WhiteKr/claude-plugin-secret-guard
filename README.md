@@ -39,7 +39,7 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 모델은 자리표시자만 봅니다. 화면에는 실제 값이 그려집니다. 화면에 그리는 방식만 바꾸므로 모델이 읽는 내용은 그대로입니다.
 
 - 데스크톱, VS Code, 모바일에서는 답변을 앱의 마크다운 그대로 그리고, 값 자리에는 `🙈 github-token` 같은 링크를 넣습니다. 링크를 누르면 실제 값이 클립보드에 복사되고, 알림에는 이름만 나옵니다. 화면에는 실제 값을 그리지 않고, 모델은 아무것도 보지 못합니다.
-- 코드 블록과 인라인 코드 안에는 링크를 넣을 수 없어서 `🙈github-token`처럼 이름만 보여 주고, 그 코드 블록이나 문단 바로 뒤에 복사 링크를 한 줄로 붙입니다.
+- 코드 블록과 인라인 코드 안에는 링크를 넣을 수 없어서 `🙈github-token`처럼 이름만 보여 주고, 그 코드 블록이나 문단 바로 뒤에 복사 링크를 한 줄로 붙입니다. 코드 블록 뒤에는 `🙈 코드 블록 전체` 링크도 붙습니다. 누르면 블록 전체를 실제 값으로 바꿔서 복사합니다.
 - 터미널에서는 같은 색 막대로 값을 가리고, 마우스를 올리면 값이 보입니다. 막대 뒤의 ⧉ 버튼을 누르면 값이 복사됩니다.
 - 도구 행(파일 쓰기, 명령 출력)은 앱이 그리는 영역이라 칩을 넣을 수 없습니다. 그래서 값 앞에 🙈를 붙여 보여 줍니다.
 - 사용자 메시지는 앱의 말풍선을 그대로 두고, 직접 입력한 값 앞에 🙈를 붙여 보여 줍니다. 이 세션이 모르는 자리표시자를 붙여 넣었다면 적은 그대로 보입니다.
@@ -58,6 +58,7 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 
 - 커밋이나 해시처럼 이름이 그 값의 정체를 밝히는 경우의 git SHA와 UUID
 - `${VAR}`나 `process.env.X` 같은 변수 참조, `changeme` 같은 예시 값, 숫자뿐인 값
+- 나중에 값이 채워질 자리가 든 템플릿 (`ghp_%s`, `pre-${DB_PASS}-post`, `Bearer-$GITHUB_TOKEN`). `$` 뒤에는 `GITHUB_TOKEN`처럼 밑줄이 든 대문자 이름이 와야 하므로 `Pa$sword1`은 비밀번호로 봅니다. `%` 뒤에 16진수가 이어지는 `%d0`은 퍼센트 인코딩으로 봅니다.
 - 꺾쇠 없이 적은 자리표시자 (`url-password:afe8c904c2e6`, `secret:github-token:0123456789ab`)
 - 코드 식별자, 타입, 호출처럼 보이는 값 (`token: string)`, `tokens[1]`, `"accounts.User"`, `"LlamaTokenizerFast"`)
 - 따옴표 속 숫자 없는 단어나 문구 (`"Required"`, `'Publish token'`)

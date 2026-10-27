@@ -189,8 +189,15 @@ const BARE_CODE = /[()[\]{}<>]|^!/
 // Words in quotes: a label or a prompt (`'Publish token'`, `'npm password: '`).
 const PHRASE = /^[A-Za-z]+(?: [A-Za-z]+)+:? ?$/
 
+// A value that holds a slot filled in later (`ghp_%s`, `${GH_TOKEN}`,
+// `$GITHUB_TOKEN`) is a template, wherever the slot stands. A slot followed by
+// a hex digit is percent-encoding (`%d0`), and a bare `$` reference needs an
+// env-style name, so `Pa$sword1` stays a password.
+const SLOT = /%(?:\([\w.]+\))?[sdvqr](?![0-9A-Fa-f])|\$\{[A-Za-z_]\w*[^}]*\}|\$[A-Z][A-Z0-9]*_[A-Z0-9_]+/
+
 const isExempt = (value: string, rule: Rule, m: RegExpMatchArray, isQuoted: boolean) => {
   if (EXEMPT.some(re => re.test(value)) || isMasked(value) || rule.isDummy?.(value, m)) return true
+  if (SLOT.test(value)) return true
   if (!rule.isAssignment) return DIGEST.some(re => re.test(value))
   const key = m[1] ?? ''
   if (DIGEST.some(re => re.test(value))) return DIGEST_KEY.test(key)
