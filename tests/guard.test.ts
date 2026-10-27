@@ -528,7 +528,7 @@ test('a copy the surface could not take says so, without the value', async ($, o
 test('a user row keeps its own drawing, the value marked and never the note; a pasted placeholder stays as typed', async ($, on) => {
   const { store, draw } = await setup($, on)
   const ph = (await store(`GITHUB_TOKEN=${GH}`)).match(PLACEHOLDER)?.[0] ?? ''
-  const note = '[secret-guard] Values shaped <<secret:LABEL:ID>> above are redacted credentials. Copy them verbatim into tool inputs; the real value is substituted when the tool runs. Never ask the user for the value or try to recover it.'
+  const note = '[secret-guard] Each <<secret:LABEL:ID>> above stands for a credential secret-guard holds for the user. Use it as-is in Edit, Write or Bash input to work with the real value; it is filled in when the tool runs.'
   const user = (text: string) => draw('UserMessage', { text, origin: { kind: 'unclassified' }, isExpanded: false })
   for (const text of [`token ${ph}\n\n${note}`, `token ${GH}`]) expect((await user(text)).text).toBe(`token 🙈${GH}`)
   expect((await user(`hello\n\n${note}`)).text).toBe('hello')
@@ -546,7 +546,7 @@ test('a prompt with a secret tells the model beside it, never in the text the pe
   })
   await $.prompt.submit({ text: `token ${GH}`, wait: false, origin: { kind: 'composer' } })
   await $.prompt.submit({ text: 'hello there', wait: false, origin: { kind: 'composer' } })
-  expect(submitted[0]?.context?.join('\n')).toContain('[secret-guard] Values shaped')
+  expect(submitted[0]?.context?.join('\n')).toContain('[secret-guard] Each')
   expect(submitted[1]?.context ?? []).toEqual([])
   await $.session.append({
     message: { type: 'user', role: 'user', content: [{ type: 'text', text: `token ${GH}` }] },
@@ -757,7 +757,7 @@ test('the placeholder notation in docs and in the guard note is never taken for 
   await $.session.append(toolResult(`${doc}\nGITHUB_TOKEN=${GH}`))
   stored = storedRow(session.appended().at(-1))
   expect(stored).toContain(doc)
-  expect(stored).toContain('[secret-guard] Values shaped <<secret:LABEL:ID>>')
+  expect(stored).toContain('[secret-guard] Each <<secret:LABEL:ID>>')
   expect(await step()).toEqual({ answer: 'ok', sent: 1 })
 })
 
