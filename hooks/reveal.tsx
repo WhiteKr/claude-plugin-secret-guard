@@ -12,6 +12,7 @@ const escapeXml = (text: string) =>
 
 const CHAR_WIDTH = 7.25
 const HEIGHT = 20
+const COPY_SLOT = 24
 
 // Claude Desktop's palette: warm gray at rest, its clay orange under the pointer.
 const MUTED = '#8f8a83'
@@ -31,7 +32,7 @@ const filler = (length: number) => FILLER.repeat(Math.ceil(length / FILLER.lengt
 
 export function pillSvg(text: string, isSecret: boolean): { source: string; width: number } {
   const span = text.length * CHAR_WIDTH
-  const width = Math.ceil(28 + span + 10)
+  const width = Math.ceil(28 + span + (isSecret ? COPY_SLOT : 10))
   // Fonts differ by surface (Menlo on a Mac, DejaVu or Ubuntu Mono on Linux); the text is spread to the chip it was measured for.
   // Wide glyphs (Hangul, emoji) and spaces SVG collapses would be squeezed or stretched, so only one-cell text is fitted.
   const fit = /^[!-~]+$/.test(text) ? `textLength="${span.toFixed(1)}" lengthAdjust="spacing"` : ''
@@ -59,7 +60,7 @@ ${isSecret ? smear : ''}
   return { source, width }
 }
 
-const COPY = '📋'
+const COPY = '⧉'
 
 const COPY_FAILED = {
   'no-surface': '복사할 화면이 연결되어 있지 않습니다',
@@ -89,23 +90,29 @@ export function drawMessage(
     const key = `secret-guard-${e.requestId}-${n}`
     const { label, value } = secret
     // The key and label are what a surface shows or reports, so they never hold the value.
+    // A Button's label replaces its children on a desktop, so the glyph rides as a child and the label stays unset.
     const copyButton =
       value === undefined ? null : (
         <Button
           key={`secret-guard-copy-${e.requestId}-${n}`}
-          label={COPY}
           plain
-          dimColor
-          hover={{ dimColor: false }}
+          hover={{ color: 'text' }}
           onPress={press => void copy($, { label, value }, press.surface)}
-        />
+        >
+          <Text color={MUTED}>{COPY}</Text>
+        </Button>
       )
     if (Svg) {
       const pill = pillSvg(value ?? label, value !== undefined)
+      // The pill leaves its last COPY_SLOT pixels empty, and the Button, which the SVG cannot hold, is laid over them.
       return (
-        <Box key={key} flexDirection="row" flexGrow={0} flexShrink={0}>
+        <Box key={key} position="relative" flexGrow={0} flexShrink={0} alignSelf="flex-start">
           <Svg source={pill.source} alt={`${HIDDEN} ${label}`} width={pill.width} height={HEIGHT} isInteractive />
-          {copyButton}
+          {copyButton && (
+            <Box position="absolute" top={0} right={0}>
+              {copyButton}
+            </Box>
+          )}
         </Box>
       )
     }
@@ -126,6 +133,7 @@ export function drawMessage(
         <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }} backgroundColor={BAR}>
           <Text>{SHOWN}</Text>
         </Box>
+        <Text> </Text>
         {copyButton}
       </Box>
     )
