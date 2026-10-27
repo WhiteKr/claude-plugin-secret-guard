@@ -267,6 +267,6 @@ export const register: Register = on => {
       return { text: `등록하지 않았습니다. 사용법은 /secret <값>이고, 값은 ${MIN_KNOWN}자 이상이어야 합니다.` }
     }
     await $.prompt.fill({ text: e.args + ' ', mode: 'insert' })
-    return { text: `${e.args} 로 등록됨` }
+    return { text: `\`${e.args}\` 로 등록됨` }
   })
 }

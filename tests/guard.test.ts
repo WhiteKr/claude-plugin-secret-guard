@@ -315,7 +315,8 @@ test('/secret registers a value, fills the prompt, and scrubs it from later rows
   })
   const token = r.text?.match(PLACEHOLDER)?.[0]
   expect(token).toMatch(/^<<secret:user:[0-9a-f]{12}>>$/)
-  expect(r.text).toBe(`${token} 로 등록됨`)
+  // In inline code: markdown reads a bare `<secret:…>` as an autolink and drops a bracket of each pair.
+  expect(r.text).toBe(`\`${token}\` 로 등록됨`)
   expect(filled).toEqual([`${token} `])
 
   expect(await store(`the wifi password is ${value}.`)).toBe(`the wifi password is ${token}.`)
