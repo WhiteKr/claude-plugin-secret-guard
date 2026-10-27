@@ -3,8 +3,10 @@ import type { EngineInterface, Register, ToolCallInput } from 'claude-code'
 
 import type { SecretGuardVault } from '../types'
 import { IS_PLACEHOLDER, MIN_KNOWN, PLACEHOLDER, idFor, placeholder, randomSalt, scrub, substitute } from './detect'
-import { layout, mapStrings, showPlain } from './display'
-import { drawMessage } from './reveal'
+import { layout, linked, mapStrings, showPlain } from './display'
+import { inject } from './inject'
+import { recall, remember } from './keyring'
+import { drawLinked, drawMessage } from './reveal'
 
 type Block = { type: string; [field: string]: unknown }
 
@@ -68,10 +70,34 @@ async function scrubber($: EngineInterface) {
       return r.text
     },
     commit: async () => {
-      if (Object.keys(added).length > 0) await update($, vault, v => ({ ...v, ...added }))
+      if (Object.keys(added).length === 0) return
+      await update($, vault, v => ({ ...v, ...added }))
+      await remember($, added)
     },
   }
 }
+
+/** The vault with any placeholder in `text` it lacks filled from the keychain. */
+async function withRecalled($: EngineInterface, text: string): Promise<SecretGuardVault> {
+  const known: SecretGuardVault = await read($, vault)
+  const wanted = [...text.matchAll(PLACEHOLDER)]
+    .map(([, label, id]) => ({ label: label!, id: id! }))
+    .filter(({ id }) => !known[id])
+  if (wanted.length === 0) return known
+  const found = await recall($, wanted)
+  if (Object.keys(found).length === 0) return known
+  await update($, vault, v => ({ ...found, ...v }))
+  return { ...found, ...known }
+}
+
+// Bash reads each value from a file in a directory of its own (0700, files
+// 0600), made for one call and removed when it returns.
+async function injectDir($: EngineInterface): Promise<string> {
+  const root = ((await $.env.get('TMPDIR').catch(() => undefined)) ?? '/tmp').replace(/\/+$/, '')
+  return `${root}/secret-guard-${randomSalt().slice(0, 16)}`
+}
+
+const lingering = new Set<string>()
 
 async function mapTexts(content: readonly Block[], f: (text: string) => Promise<string> | string): Promise<Block[]> {
   const out: Block[] = []
@@ -193,7 +219,8 @@ export const register: Register = on => {
       const input = Object.fromEntries(Object.entries(e).filter(([key]) => !RESERVED.has(key)))
       return HAS_PLACEHOLDER.test(JSON.stringify(input)) ? { deny: refusedTool(tool) } : next(e)
     }
-    const known: SecretGuardVault = await read($, vault)
+    const input = Object.fromEntries(Object.entries(e).filter(([key]) => !RESERVED.has(key)))
+    const known = await withRecalled($, JSON.stringify(input))
     const missing: string[] = []
     const fields: Record<string, unknown> = {}
     const put = (text: string) => {
@@ -201,24 +228,58 @@ export const register: Register = on => {
       missing.push(...r.missing)
       return r.text
     }
-    for (const [key, value] of Object.entries(e)) {
-      if (RESERVED.has(key)) continue
+    const dir = tool === 'Bash' && typeof input.command === 'string' ? await injectDir($) : undefined
+    const injection = dir === undefined ? undefined : inject(input.command as string, known, dir)
+    for (const [key, value] of Object.entries(input)) {
+      if (injection && key === 'command') {
+        missing.push(...injection.missing)
+        if (injection.command !== value) fields[key] = injection.command
+        continue
+      }
       const substituted = mapStrings(value, put)
       if (substituted !== value) fields[key] = substituted
     }
     const [first] = missing
     if (first !== undefined) return { deny: unknownPlaceholder(first) }
     if (Object.keys(fields).length === 0) return next(e)
-    return next({ ...e, ...fields } as ToolCallInput)
+    if (!injection || Object.keys(injection.files).length === 0) return next({ ...e, ...fields } as ToolCallInput)
+    for (const [id, value] of Object.entries(injection.files)) {
+      const r = await $.process.run(['sh', '-c', 'umask 077 && mkdir -p "$1" && cat > "$1/$2"', 'sh', dir!, id], { stdin: value })
+      if (r.exitCode !== 0) return { deny: 'secret-guard: 값을 넘길 임시 파일을 만들지 못해 실행을 막았습니다.' }
+    }
+    // A background command reads its files after this call returns; they go when the session ends.
+    if (input.run_in_background === true) {
+      lingering.add(dir!)
+      return next({ ...e, ...fields } as ToolCallInput)
+    }
+    try {
+      return await next({ ...e, ...fields } as ToolCallInput)
+    } finally {
+      await $.process.run(['rm', '-rf', dir!]).catch(() => {})
+    }
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: 'secret-guard: 자리표시자를 치환하지 못해 실행을 막았습니다.' },
   )
 
   // The screen shows the person each real value, marked, where the model has a
   // placeholder; a rewrite here draws the row alone, never what the model reads.
+  // A graphical surface draws the reply as its own markdown with each secret a
+  // link; the terminal, where a link press may open it instead, keeps the bars.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    const parts = layout(e.props.text, await read($, vault))
+    if (!HAS_PLACEHOLDER.test(e.props.text)) return next(e)
+    const known = await withRecalled($, e.props.text)
+    if (e.surface !== 'terminal') {
+      const reply = linked(e.props.text, known)
+      return reply ? drawLinked($, e, reply) : next(e)
+    }
+    const parts = layout(e.props.text, known)
     return parts ? drawMessage($, e, parts) : next(e)
+  })
+
+  on('session.end', async ($, e, next) => {
+    for (const dir of lingering) await $.process.run(['rm', '-rf', dir]).catch(() => {})
+    lingering.clear()
+    return next(e)
   })
 
   // A prompt keeps the surface's own drawing, which a tree of this mod's would
@@ -258,7 +319,10 @@ export const register: Register = on => {
     const id = await idFor(await saltOf($), value)
     const held = (await read($, vault))[id]
     const label = held?.label ?? 'user'
-    if (!held) await update($, vault, v => ({ ...v, [id]: { label, value } }))
+    if (!held) {
+      await update($, vault, v => ({ ...v, [id]: { label, value } }))
+      await remember($, { [id]: { label, value } })
+    }
     return next({ ...e, args: placeholder(label, id) })
   }).catch(($, e, next) => (next.called ? next(e) : next({ ...e, args: '' })))
 

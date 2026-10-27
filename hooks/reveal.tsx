@@ -1,7 +1,7 @@
 import type { EngineInterface, RenderElement, RenderInput, RenderSurface } from 'claude-code'
 
 import { ICON as HIDDEN, ICON_SHOWN as SHOWN } from './display'
-import type { Part, Piece } from './display'
+import type { Linked, Part, Piece } from './display'
 
 // On the terminal, which draws no SVG, the value is drawn in its own
 // background color, a bar no one can read, until the pointer rests on it.
@@ -71,6 +71,22 @@ const COPY_FAILED = {
 async function copy($: EngineInterface, secret: { label: string; value: string }, surface: RenderSurface) {
   const copied = await $.ui.copy({ text: secret.value, surface })
   $.ui.toast(copied.isCopied ? `${secret.label} 값을 클립보드에 복사했습니다` : `복사하지 못했습니다: ${COPY_FAILED[copied.reason]}`)
+}
+
+/** A reply the surface draws as markdown, its secrets links whose press copies the value. */
+export function drawLinked($: EngineInterface, e: RenderInput<'AssistantMessage'>, reply: Linked): RenderElement {
+  const { Markdown } = $.ui.resolve(e)
+  return (
+    <Markdown
+      key={`secret-guard-${e.requestId}`}
+      text={reply.text}
+      pressableLinks={Object.keys(reply.links)}
+      onLinkPress={(link, press) => {
+        const secret = reply.links[link.href]
+        if (secret) void copy($, secret, press.surface)
+      }}
+    />
+  )
 }
 
 /** A message whose paragraphs holding a secret this mod draws, so a hover can reveal the value. */

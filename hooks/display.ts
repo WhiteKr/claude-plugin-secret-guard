@@ -112,6 +112,59 @@ export function layout(text: string, vault: SecretGuardVault): Part[] | undefine
   return parts
 }
 
+// A link's target only names the id; `.invalid` never resolves, so a surface
+// that opens the link instead of reporting the press goes nowhere.
+export const LINK_BASE = 'https://secret.invalid/'
+
+/** A reply as markdown the surface draws whole, each secret a link whose press copies it. */
+export type Linked = { text: string; links: Record<string, { label: string; value: string }> }
+
+/**
+ * Turns each placeholder into a link the surface draws in place, so the
+ * reply keeps its own headings, tables and code. Code draws no links: a
+ * placeholder there shows its name, and a line after the code block or the
+ * paragraph holds the links for those. Undefined when the reply holds none.
+ */
+export function linked(text: string, vault: SecretGuardVault): Linked | undefined {
+  if (!HAS_PLACEHOLDER.test(text)) return undefined
+  const links: Linked['links'] = {}
+  const out: string[] = []
+  let pending = new Map<string, string>()
+  let isFence = false
+  const link = (label: string, id: string) => {
+    const value = vault[id]?.value
+    if (value === undefined) return `${ICON} ${label}`
+    links[LINK_BASE + id] = { label, value }
+    return `[${ICON} ${label}](${LINK_BASE}${id})`
+  }
+  const flush = () => {
+    if (pending.size === 0) return
+    out.push('', [...pending].map(([id, label]) => link(label, id)).join(' · '))
+    pending = new Map()
+  }
+  for (const line of text.split('\n')) {
+    if (FENCE.test(line)) {
+      out.push(line)
+      if (isFence) flush()
+      isFence = !isFence
+      continue
+    }
+    if (!isFence && line.trim() === '') flush()
+    out.push(
+      line.replace(SHOWN, (whole, ...m) => {
+        const at = m[m.length - 2] as number
+        const { label, id } = labelId([whole, ...m] as unknown as RegExpMatchArray)
+        const inCode = isFence || (line.slice(0, at).split('`').length - 1) % 2 === 1
+        if (!inCode) return link(label, id)
+        if (vault[id]) pending.set(id, label)
+        return `${ICON}${label}`
+      }),
+    )
+  }
+  flush()
+  return { text: out.join('\n'), links }
+}
+
 /** Applies `f` to every string in a JSON-shaped value; unchanged parts keep their identity. */
 export function mapStrings(value: unknown, f: (text: string) => string): unknown {
   if (typeof value === 'string') return f(value)
