@@ -19,9 +19,12 @@ const NAME = String.raw`[\w.-]{0,40}(?:secret|token|passw(?:or)?d|pwd|api[_-]?ke
 
 const FILE_EXT = String.raw`\.(?:ya?ml|json|toml|env|ini|cfg|conf|properties|xml|html?|md|txt|sh|[cm]?[jt]sx?|py|rb|go|rs|java|kt|php|cs|swift)`
 
+// The password may be empty (an API key sent as the user) and may be any UTF-8 text.
 const isUserPassword = (value: string) => {
   try {
-    return /^[ -~]+:[ -~]+$/.test(atob(value))
+    const bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0))
+    // Bytes that are not UTF-8 decode to U+FFFD.
+    return /^[^\x00-\x1f\x7f:\ufffd]+:[^\x00-\x1f\x7f\ufffd]*$/.test(new TextDecoder().decode(bytes))
   } catch {
     return false
   }
@@ -41,13 +44,14 @@ const RULES: readonly Rule[] = [
   { kind: 'google-key', pattern: /\bAIza[0-9A-Za-z_-]{35}/dg },
   { kind: 'stripe-key', pattern: /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/dg },
   { kind: 'npm-token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/dg },
-  { kind: 'google-client-secret', pattern: /\bGOCSPX-[A-Za-z0-9_-]{28}\b/dg },
+  { kind: 'google-client-secret', pattern: /\bGOCSPX-[A-Za-z0-9_-]{28}(?![\w-])/dg },
   { kind: 'huggingface-token', pattern: /\bhf_[A-Za-z0-9]{30,}\b/dg, isDummy: value => !/\d/.test(value) },
-  { kind: 'sendgrid-key', pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/dg },
+  { kind: 'sendgrid-key', pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![\w-])/dg },
   { kind: 'digitalocean-token', pattern: /\bdo[opr]_v1_[0-9a-f]{64}\b/dg },
-  { kind: 'telegram-token', pattern: /\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b/dg },
+  // A bot URL glues the token to `bot` (`/bot123456789:AA…/getMe`).
+  { kind: 'telegram-token', pattern: /(?<!\d)\d{8,10}:AA[A-Za-z0-9_-]{33}(?![\w-])/dg },
   // A webhook URL is its own credential; the host and ids stay readable.
-  { kind: 'webhook-token', pattern: /\bhttps:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/([A-Za-z0-9_-]{60,})/dg, groups: [1] },
+  { kind: 'webhook-token', pattern: /\bhttps:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/([A-Za-z0-9_-]{60,})/dg, groups: [1] },
   { kind: 'webhook-token', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/([A-Za-z0-9]{20,})/dg, groups: [1] },
   { kind: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/dg },
   { kind: 'bearer-token', pattern: /\bBearer\s+([A-Za-z0-9._~+/=-]{16,})/dg, groups: [1] },
@@ -189,7 +193,8 @@ const isExempt = (value: string, rule: Rule, m: RegExpMatchArray, isQuoted: bool
   if (!rule.isAssignment) return DIGEST.some(re => re.test(value))
   const key = m[1] ?? ''
   if (DIGEST.some(re => re.test(value))) return DIGEST_KEY.test(key)
-  if (KEY_REFERENCE.test(key) || LOCATION.test(value)) return true
+  // Base64 padding ends a key (`AccountKey=/…==`), never a path.
+  if (KEY_REFERENCE.test(key) || (LOCATION.test(value) && !value.endsWith('='))) return true
   const hasDigit = /\d/.test(value)
   // A leading capital is a word's (`Required`), not a mixed-case secret's.
   const isMixed = /[a-z]/.test(value) && /[A-Z]/.test(value.slice(1))

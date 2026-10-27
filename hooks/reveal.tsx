@@ -33,7 +33,8 @@ export function pillSvg(text: string, isSecret: boolean): { source: string; widt
   const span = text.length * CHAR_WIDTH
   const width = Math.ceil(28 + span + 10)
   // Fonts differ by surface (Menlo on a Mac, DejaVu or Ubuntu Mono on Linux); the text is spread to the chip it was measured for.
-  const fit = `textLength="${span.toFixed(1)}" lengthAdjust="spacing"`
+  // Wide glyphs (Hangul, emoji) and spaces SVG collapses would be squeezed or stretched, so only one-cell text is fitted.
+  const fit = /^[!-~]+$/.test(text) ? `textLength="${span.toFixed(1)}" lengthAdjust="spacing"` : ''
   const font = 'font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace'
   const smear = SMEAR.map(([dx, dy]) => `<text class="smear" x="${28 + dx}" y="${14 + dy}" ${fit}>${filler(text.length)}</text>`).join('')
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${HEIGHT}" viewBox="0 0 ${width} ${HEIGHT}">
