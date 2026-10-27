@@ -472,6 +472,9 @@ test('service tokens, webhook URLs, Basic credentials and Azure account keys are
     ['Authorization: Basic ' + btoa('sk' + '_live_' + run(24) + ':'), btoa('sk' + '_live_' + run(24) + ':')],
     ['Authorization: Basic ' + 'YWRtaW4667mE67CA67KI7Zi4MTIzNA==', 'YWRtaW4667mE67CA67KI7Zi4MTIzNA=='],
     ['https://discord.com/api/v10/webhooks/123456789012345678/' + run(68), run(68)],
+    ['git -c http.extraHeader="Authorization: Basic ' + btoa(':' + run(52)) + '"', btoa(':' + run(52))],
+    ['Authorization:·Basic·' + basic + '␊', basic],
+    ['Authorization:·Bearer·' + run(40) + '␊', run(40)],
   ] as const
   for (const [line, value] of cases) {
     const stored = await store(line)
@@ -484,6 +487,8 @@ test('service tokens, webhook URLs, Basic credentials and Azure account keys are
     'Authorization: Basic ' + btoa('no colon in this one'),
     'see https://hooks.slack.com/services for setup',
     'account_key_id: 42',
+    'AUTH_CALLBACK=https://example.com/oauth/callback?next=',
+    'SECRET_DIR=./secrets/base=',
   ].join('\n')
   expect(await store(plain)).toBe(plain)
 })
