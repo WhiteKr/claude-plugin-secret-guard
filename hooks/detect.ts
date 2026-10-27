@@ -15,9 +15,17 @@ type Span = { start: number; end: number; kind: string; value: string; priority:
 
 const KNOWN = -1
 
-const NAME = String.raw`[\w.-]{0,40}(?:secret|token|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth(?!or)|credential)[\w.-]{0,40}`
+const NAME = String.raw`[\w.-]{0,40}(?:secret|token|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|client[_-]?secret|auth(?!or)|credential)[\w.-]{0,40}`
 
 const FILE_EXT = String.raw`\.(?:ya?ml|json|toml|env|ini|cfg|conf|properties|xml|html?|md|txt|sh|[cm]?[jt]sx?|py|rb|go|rs|java|kt|php|cs|swift)`
+
+const isUserPassword = (value: string) => {
+  try {
+    return /^[ -~]+:[ -~]+$/.test(atob(value))
+  } catch {
+    return false
+  }
+}
 
 // Ordered by priority: when two spans start at the same place and are as long, the earlier rule names the kind.
 const RULES: readonly Rule[] = [
@@ -33,8 +41,18 @@ const RULES: readonly Rule[] = [
   { kind: 'google-key', pattern: /\bAIza[0-9A-Za-z_-]{35}/dg },
   { kind: 'stripe-key', pattern: /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/dg },
   { kind: 'npm-token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/dg },
+  { kind: 'google-client-secret', pattern: /\bGOCSPX-[A-Za-z0-9_-]{28}\b/dg },
+  { kind: 'huggingface-token', pattern: /\bhf_[A-Za-z0-9]{30,}\b/dg, isDummy: value => !/\d/.test(value) },
+  { kind: 'sendgrid-key', pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/dg },
+  { kind: 'digitalocean-token', pattern: /\bdo[opr]_v1_[0-9a-f]{64}\b/dg },
+  { kind: 'telegram-token', pattern: /\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b/dg },
+  // A webhook URL is its own credential; the host and ids stay readable.
+  { kind: 'webhook-token', pattern: /\bhttps:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/([A-Za-z0-9_-]{60,})/dg, groups: [1] },
+  { kind: 'webhook-token', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/([A-Za-z0-9]{20,})/dg, groups: [1] },
   { kind: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/dg },
   { kind: 'bearer-token', pattern: /\bBearer\s+([A-Za-z0-9._~+/=-]{16,})/dg, groups: [1] },
+  // Base64 words follow `Basic` in prose too (`Basic usage`); credentials decode to `user:password`.
+  { kind: 'basic-auth', pattern: /\bBasic\s+([A-Za-z0-9+/]{12,}={0,2})(?![\w+/=])/dg, groups: [1], isDummy: value => !isUserPassword(value) },
   // Values are printable ASCII: Read output marks line ends and spaces with
   // glyphs such as U+240A and U+00B7, which must not join the value.
   // A password that repeats the user or the scheme (`postgres:postgres@`,
