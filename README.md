@@ -46,9 +46,11 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 ## 찾는 값
 
 - PEM 개인 키 블록
-- GitHub, Anthropic, OpenAI, AWS, Slack, GitLab, Google, Stripe, npm 토큰과 JWT, `Bearer` 토큰
+- GitHub, Anthropic, OpenAI, AWS, Slack, GitLab, Google, Stripe, npm, Hugging Face, SendGrid, DigitalOcean, Telegram 봇 토큰과 Google OAuth 클라이언트 시크릿(`GOCSPX-`)
+- JWT, `Bearer` 토큰, `user:password`로 풀리는 `Basic` 인증 값
+- Discord와 Slack 웹훅 URL의 토큰 부분. 호스트와 ID는 그대로 보입니다.
 - URL 속 비밀번호 (`postgres://user:비밀번호@host`)
-- 이름에 secret, token, password, api_key, access_key, auth, credential 등이 들어간 대입문의 값 (.env, YAML, JSON, `export`)
+- 이름에 secret, token, password, api_key, access_key, account_key, auth, credential 등이 들어간 대입문의 값 (.env, YAML, JSON, `export`, Azure 연결 문자열의 `AccountKey=`)
 
 다음은 가리지 않습니다.
 
@@ -78,6 +80,7 @@ claude plugin install secret-guard --marketplace WhiteKr/whitekr-claude-plugins
 ## 한계
 
 - 오탐을 줄이려고 정한 규칙 때문에 놓치는 비밀번호가 있습니다. 숫자 없는 비밀번호(`DB_PASSWORD=Secretpass`, `"MySecretPass"`), 따옴표 없이 괄호가 든 비밀번호, 사용자 이름과 같은 URL 비밀번호가 그렇습니다. 이런 값은 `/secret`으로 등록하세요.
+- 옵션에 붙여 쓴 비밀번호(`mysql -pS3cret`)와 한글 이름의 대입문(`비밀번호: …`)도 찾지 못합니다. `--password=…`처럼 영어 이름과 `=`로 적은 값은 찾습니다.
 - 반대로 숫자가 섞인 소문자 설정값(`AUTH_MODE=oauth2-pkce`)은 비밀번호로 보고 가립니다. 이런 값도 Edit, Bash 같은 도구에서는 실제 값으로 바뀌므로 작업에는 지장이 없습니다.
 - 가린 값이 코드의 다른 곳에 단독 단어로 나오면 그곳도 가립니다. `DB_PASSWORD=password1`을 가린 뒤에는 변수 이름 `password1`도 자리표시자로 보입니다.
 - 모델의 실수로 값이 새는 일을 막는 장치입니다. 작정한 모델을 막는 격리 장치는 아닙니다. Bash로 값을 뒤집거나 잘라서 출력하면, 그 변형된 모양은 가려지지 않습니다.
