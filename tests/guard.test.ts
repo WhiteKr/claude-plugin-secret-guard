@@ -39,7 +39,7 @@ async function setup($: Engine, on: On) {
   const drawn: Record<string, Record<string, unknown>> = {}
   on('ui.render', (_, e) => {
     drawn[e.component] = e.props as Record<string, unknown>
-    return { type: 'engine', ref: 'bottom' } as never
+    return { type: 'engine', ref: 0 } as never
   })
   const store = async (text: string) => {
     await $.session.append(toolResult(text))
@@ -393,8 +393,8 @@ test('a prompt with a secret tells the model beside it, never in the text the pe
     submitted.push({ text: e.text, context: e.context })
     return { text: e.text, context: e.context }
   })
-  await $.prompt.submit({ text: `token ${GH}` })
-  await $.prompt.submit({ text: 'hello there' })
+  await $.prompt.submit({ text: `token ${GH}`, wait: false, origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: 'hello there', wait: false, origin: { kind: 'composer' } })
   expect(submitted[0]?.context?.join('\n')).toContain('[secret-guard] Values shaped')
   expect(submitted[1]?.context ?? []).toEqual([])
   await $.session.append({
