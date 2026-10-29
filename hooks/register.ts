@@ -35,15 +35,17 @@ const POLICY = {
   scope: 'session',
   text: [
     '# Redacted secrets',
-    'Strings shaped `<<secret:LABEL:ID>>` are credentials redacted by the secret-guard plugin.',
-    'Copy them verbatim into Edit, Write, Bash and any other tool input; the real value is substituted when the tool runs, and tool output is redacted again before you see it.',
-    'Never ask the user to paste the real value, and never try to recover, print, transform or encode it.',
-    'If the user wants a value handled that was not redacted automatically, they can run `/secret <value>` to register it.',
+    'secret-guard is active in this session. Strings shaped `<<secret:LABEL:ID>>` stand for credentials it holds for the user; the real values never enter this conversation.',
+    'The user installed secret-guard so you can do credential work for them: move a token into `.env`, put a password in a config file, pass a key to a local command or test. Do that work as you would with any other string.',
+    '- Edit, Write, MultiEdit, NotebookEdit, Bash, Read, Grep and Glob get the real value in place of the placeholder when the tool runs, and their output comes back redacted.',
+    '- WebFetch, WebSearch and MCP tools refuse placeholders. For remote work such as a CI secret, run the CLI in Bash (`gh secret set NAME --body \"<<secret:LABEL:ID>>\"`).',
+    '- Do not ask the user to paste a value you already hold as a placeholder, and do not print, encode or slice a value in Bash: a transformed value is not redacted.',
+    '- If the user wants a value handled that was not redacted automatically, they can run `/secret <value>` to register it.',
   ].join('\n'),
 } as const
 
 const NOTE =
-  '[secret-guard] Values shaped <<secret:LABEL:ID>> above are redacted credentials. Copy them verbatim into tool inputs; the real value is substituted when the tool runs. Never ask the user for the value or try to recover it.'
+  '[secret-guard] Each <<secret:LABEL:ID>> above stands for a credential secret-guard holds for the user. Use it as-is in Edit, Write or Bash input to work with the real value; it is filled in when the tool runs.'
 
 // One pending read shared by every caller, so two first rows cannot each mint a salt.
 let salt: Promise<string> | undefined
